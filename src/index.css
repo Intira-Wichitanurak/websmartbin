@@ -1,0 +1,254 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { height: 100%; width: 100%; }
+  body {
+    font-family: 'Mali', 'Comic Sans MS', system-ui, sans-serif;
+    background:
+      radial-gradient(circle at 50% 20%, #b9dcf3 0, transparent 60%),
+      linear-gradient(180deg, #6ba9dc 0%, #99c4e8 100%);
+    color: #2d4a66;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  #root {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+}
+
+@layer components {
+  /* The whole app lives in this 1024x600 stage — a window into the sky.
+     Scaled to fit the browser viewport via --stage-scale (set from JS in App.jsx). */
+  .stage {
+    width: 1024px;
+    height: 600px;
+    flex-shrink: 0;
+    position: relative;
+    overflow: hidden;
+    border-radius: 32px;
+    transform: scale(var(--stage-scale, 1));
+    transform-origin: center center;
+    box-shadow:
+      0 30px 60px -20px rgba(0,0,0,0.35),
+      0 0 0 6px rgba(255,255,255,0.6),
+      0 0 0 8px rgba(120,170,210,0.3);
+    background:
+      radial-gradient(ellipse at 88% 14%, #fff8d6 0%, rgba(255,248,214,0) 30%),
+      radial-gradient(ellipse at 12% 90%, #ffd9e6 0%, rgba(255,217,230,0) 35%),
+      linear-gradient(180deg, #94c8eb 0%, #b8dcf2 35%, #d8ecf7 65%, #f3faff 100%);
+  }
+  .stage::before {
+    /* soft inner vignette for depth */
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(80,130,180,0.18) 100%);
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  /* Big, bouncy primary button with a sweeping shine */
+  .btn-cute {
+    @apply relative inline-flex items-center justify-center gap-2 rounded-full
+           px-6 py-3 font-bold text-white text-base overflow-hidden
+           bg-gradient-to-b from-sky-400 to-sky-600
+           shadow-cute ring-2 ring-white
+           hover:from-sky-500 hover:to-sky-600 hover:-translate-y-0.5
+           active:translate-y-0.5 active:scale-95
+           transition-all duration-150 select-none;
+  }
+  .btn-cute::after {
+    content: '';
+    position: absolute;
+    top: 0; left: -120%;
+    width: 70%; height: 100%;
+    background: linear-gradient(110deg, transparent 25%, rgba(255,255,255,0.5) 50%, transparent 75%);
+    transform: skewX(-20deg);
+    transition: left .55s ease;
+  }
+  .btn-cute:hover::after { left: 130%; }
+  .btn-cute::before {
+    /* glossy top highlight */
+    content: '';
+    position: absolute;
+    top: 2px; left: 8%; right: 8%;
+    height: 38%;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.55), transparent);
+    pointer-events: none;
+  }
+
+  .btn-soft {
+    @apply relative inline-flex items-center justify-center gap-2 rounded-full
+           px-4 py-2 font-bold text-sky-700 text-sm
+           bg-gradient-to-b from-white to-sky-50
+           shadow-soft ring-2 ring-sky-100
+           hover:from-sky-50 hover:to-white hover:-translate-y-0.5
+           active:translate-y-0.5 active:scale-95
+           transition-all duration-150 select-none;
+  }
+
+  /* Sticker-style card with gradient + inner shine */
+  .card {
+    @apply rounded-[1.75rem] backdrop-blur ring-4 ring-white relative;
+    background: linear-gradient(180deg, rgba(255,255,255,0.97) 0%, rgba(245,250,255,0.92) 100%);
+    box-shadow:
+      0 18px 40px -12px rgba(60,110,170,0.30),
+      inset 0 1px 0 rgba(255,255,255,0.9);
+  }
+  .card::before {
+    /* soft top shine inside the card */
+    content: '';
+    position: absolute;
+    top: 6px; left: 6%; right: 6%;
+    height: 35%;
+    border-radius: 1.5rem;
+    background: linear-gradient(180deg, rgba(255,255,255,0.5), transparent);
+    pointer-events: none;
+  }
+
+  /* Speech bubble — small one with tail pointing DOWN */
+  .bubble {
+    @apply relative inline-block bg-gradient-to-b from-white to-sky-50
+           text-sky-700 font-semibold
+           px-3 py-1.5 rounded-2xl shadow-soft ring-2 ring-sky-100 text-sm;
+  }
+  .bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -8px;
+    left: 50%;
+    width: 14px;
+    height: 14px;
+    background: white;
+    transform: translateX(-50%) rotate(45deg);
+    box-shadow: 2px 2px 0 0 #cfe6ff;
+    border-radius: 3px;
+  }
+
+  /* BIG speech bubble — tail pointing LEFT toward the mascot */
+  .bubble-big {
+    @apply relative bg-gradient-to-br from-white via-white to-sky-50
+           text-sky-700 font-bold
+           px-6 py-5 rounded-[2rem] shadow-soft ring-4 ring-sky-100
+           text-lg leading-relaxed;
+  }
+  .bubble-big::before {
+    content: '';
+    position: absolute;
+    left: -14px;
+    top: 38%;
+    width: 24px;
+    height: 24px;
+    background: white;
+    transform: rotate(45deg);
+    box-shadow: -3px 3px 0 0 #cfe6ff;
+    border-radius: 6px;
+  }
+
+  /* Pill */
+  .pill-cute {
+    @apply rounded-2xl bg-white ring-2 ring-sky-100 py-1.5 px-2.5
+           flex items-center justify-center gap-1.5
+           shadow-soft hover:-translate-y-0.5 hover:rotate-1
+           transition-all duration-150 cursor-default text-xs;
+  }
+
+  /* ---------- CSS-only fluffy cloud ---------- */
+  .cloud {
+    position: absolute;
+    background: white;
+    border-radius: 100px;
+    box-shadow:
+      0 8px 20px -8px rgba(60,110,170,0.25),
+      inset 0 -4px 8px rgba(180,210,235,0.3);
+    z-index: 1;
+    pointer-events: none;
+  }
+  .cloud::before,
+  .cloud::after {
+    content: '';
+    position: absolute;
+    background: white;
+    border-radius: 50%;
+  }
+  .cloud::before { width: 55%; height: 140%; top: -55%; left: 12%; }
+  .cloud::after  { width: 65%; height: 165%; top: -75%; right: 10%; }
+
+  /* ---------- Sun with rotating rays ---------- */
+  .sun-wrap {
+    position: absolute;
+    width: 90px; height: 90px;
+    z-index: 1;
+    pointer-events: none;
+  }
+  .sun-rays {
+    position: absolute;
+    inset: -55%;
+    border-radius: 50%;
+    background:
+      conic-gradient(from 0deg,
+        transparent 0deg, rgba(255,240,170,0.55) 6deg, transparent 12deg,
+        transparent 38deg, rgba(255,240,170,0.45) 44deg, transparent 50deg,
+        transparent 75deg, rgba(255,240,170,0.55) 81deg, transparent 87deg,
+        transparent 113deg, rgba(255,240,170,0.45) 119deg, transparent 125deg,
+        transparent 150deg, rgba(255,240,170,0.55) 156deg, transparent 162deg,
+        transparent 188deg, rgba(255,240,170,0.45) 194deg, transparent 200deg,
+        transparent 225deg, rgba(255,240,170,0.55) 231deg, transparent 237deg,
+        transparent 263deg, rgba(255,240,170,0.45) 269deg, transparent 275deg,
+        transparent 300deg, rgba(255,240,170,0.55) 306deg, transparent 312deg,
+        transparent 338deg, rgba(255,240,170,0.45) 344deg, transparent 350deg);
+    animation: sunSpin 24s linear infinite;
+    filter: blur(2px);
+  }
+  .sun-disc {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #fff8d6 0%, #ffe066 55%, #f5b442 100%);
+    box-shadow:
+      0 0 30px rgba(255,209,102,0.7),
+      inset -6px -6px 12px rgba(220,160,40,0.4),
+      inset 4px 4px 8px rgba(255,255,255,0.6);
+  }
+
+  @keyframes sunSpin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+
+  /* ---------- Floating sparkle particles ---------- */
+  @keyframes particleFloat {
+    0%   { transform: translateY(0)   translateX(0)   scale(.6); opacity: 0; }
+    20%  { opacity: .8; }
+    100% { transform: translateY(-140px) translateX(20px) scale(1.1); opacity: 0; }
+  }
+  .particle {
+    position: absolute;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #fff 0%, rgba(255,255,255,0) 70%);
+    pointer-events: none;
+    z-index: 1;
+    animation: particleFloat 6s ease-in-out infinite;
+  }
+}
+
+/* Floating decorations live inside the .stage */
+.deco {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+  user-select: none;
+  filter: drop-shadow(0 4px 6px rgba(60,110,170,0.10));
+}
