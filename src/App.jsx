@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ReadyPage  from './pages/ReadyPage.jsx'
 import CameraPage from './pages/CameraPage.jsx'
 import ResultPage from './pages/ResultPage.jsx'
-import { isMuted, setMuted, unlockAudio, sfx } from './lib/sounds.js'
+import { isMuted, setMuted, unlockAudio, sfx, stopSpeech } from './lib/sounds.js'
 import { useSensor } from './hooks/useSensor.js'
 import { getSensor } from './lib/sensor.js'
 
@@ -27,9 +27,22 @@ export default function App() {
     return () => window.removeEventListener('resize', fit)
   }, [])
 
+  // Result page sets this to true only after its full speech/thank-you flow
+  // has finished — until then we ignore "cleared" so picking up the trash
+  // mid-sentence doesn't snap us back to home and cut off the audio.
+  const resultDoneRef = useRef(false)
+
   function goHome()   { setResult(null); setPage('ready') }
   function goCamera() { setResult(null); setPage('camera') }
-  function gotResult(r) { setResult(r);  setPage('result') }
+  function gotResult(r) {
+    setResult(r)
+    setPage('result')
+    resultDoneRef.current = false
+  }
+
+  // Cancel any in-flight speech the moment we change pages, so the previous
+  // page's voice never bleeds into the next page's audio.
+  useEffect(() => { stopSpeech() }, [page])
 
   // Subscribe to ESP32 sensor events. Use a ref so the handler always sees
   // the current page (without re-subscribing on every page change).
@@ -42,8 +55,9 @@ export default function App() {
       if (pageRef.current === 'ready') goCamera()
     },
     cleared: () => {
-      // After result is shown, sensor reports waste was removed → go back home
-      if (pageRef.current === 'result') goHome()
+      // Only auto-go-home from the result page once the result flow has
+      // signalled it's safe to leave (verdict + thank-you spoken).
+      if (pageRef.current === 'result' && resultDoneRef.current) goHome()
     }
   })
 
@@ -71,7 +85,13 @@ export default function App() {
       <section className="flex-1 min-h-0 relative z-10 px-4 py-2">
         {page === 'ready'  && <ReadyPage />}
         {page === 'camera' && <CameraPage onResult={gotResult} />}
-        {page === 'result' && <ResultPage result={result} onHome={goHome} />}
+        {page === 'result' && (
+          <ResultPage
+            result={result}
+            onHome={goHome}
+            onFlowDone={() => { resultDoneRef.current = true }}
+          />
+        )}
       </section>
 
       <footer className="text-center text-[11px] text-sky-700/80 py-1.5 relative z-10 shrink-0">

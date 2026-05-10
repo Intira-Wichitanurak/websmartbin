@@ -5,12 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:bridge": "node scripts/serial-bridge.js",
+    "dev:all": "concurrently -n vite,bridge -c cyan,magenta \"npm:dev\" \"npm:dev:bridge\"",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "concurrently": "^9.2.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "serialport": "^13.0.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",

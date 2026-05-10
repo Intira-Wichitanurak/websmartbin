@@ -5,25 +5,30 @@
     1) Sharp IR distance (เช่น GP2Y0A21YK0F) — บอกว่ามีของวางหรือเปล่า
     2) HX711 + Load cell 1kg — วัดน้ำหนัก (ใช้เช็ค "เศษอาหาร")
 
-  ส่งข้อมูลผ่าน WebSocket port 81 (JSON):
+  ส่งข้อมูลผ่าน UART2 (ไป Raspberry Pi) เป็น JSON บรรทัดละ event:
     {"event":"detected","grams": 123.4}   // IR เห็นของ + น้ำหนักล่าสุด
     {"event":"cleared","grams": 0.5}      // IR ไม่เห็นของแล้ว
     {"event":"weight","grams": 123.4}     // ส่งซ้ำทุก 500ms ระหว่างที่มีของ
 
-  ฝั่งเว็บ React (src/lib/sensor.js) รับไปใช้
+  ฝั่ง Pi: scripts/serial-bridge.js อ่าน /dev/serial0 แล้วเปิด WebSocket
+  server ที่ port 81 ให้เว็บ React (src/lib/sensor.js) รับไปใช้
 
-  การต่อสาย:
+  การต่อสาย — เซนเซอร์:
     Sharp IR Vcc  → ESP32 5V (VIN)
     Sharp IR GND  → ESP32 GND
     Sharp IR OUT  → ESP32 GPIO34
     HX711 VCC     → ESP32 VIN (5V)  หรือ 3V3 ก็ได้
     HX711 GND     → ESP32 GND
-    HX711 DT/DOUT → ESP32 GPIO4
-    HX711 SCK     → ESP32 GPIO5
+    HX711 DT/DOUT → ESP32 GPIO21
+    HX711 SCK     → ESP32 GPIO22
     Load cell 4 สาย → HX711 (E+/E-/A+/A-)
 
+  การต่อสาย — UART ระหว่าง ESP32 ↔ Raspberry Pi (3.3V ทั้งคู่ ต่อตรงได้):
+    ESP32 GPIO17 (TX2) → Pi GPIO15 / RXD  (physical pin 10)
+    ESP32 GPIO16 (RX2) → Pi GPIO14 / TXD  (physical pin 8)
+    ESP32 GND          → Pi GND          (physical pin 6)
+
   Library ที่ต้องติดตั้ง (Library Manager):
-    - WebSockets by Markus Sattler
     - HX711 by Bogdan Necula
 
   Calibration (ใช้ค่าที่คุณ tune มาแล้ว):
@@ -32,14 +37,12 @@
     สูตร: weight_g = (raw_value - BASELINE) / CALIBRATION_FACTOR
 */
 
-#include <WiFi.h>
-#include <WebSocketsServer.h>
 #include <HX711.h>
 
-const char* WIFI_SSID = "ENGIOT";
-const char* WIFI_PASS = "coeai123";
-
-WebSocketsServer ws(81);
+// UART2 สำหรับส่งข้อมูลให้ Pi (Serial0/USB ยังคงไว้สำหรับ debug)
+HardwareSerial PiSerial(2);
+const int PI_TX_PIN = 17;   // ESP32 TX2 → Pi RX (GPIO15, pin 10)
+const int PI_RX_PIN = 16;   // ESP32 RX2 ← Pi TX (GPIO14, pin 8)  ไม่ได้ใช้ส่งกลับ แต่ต่อไว้กันเหนียว
 
 // --- Sharp IR ---
 const int IR_PIN        = 34;     // ADC1_CH6 (input only)
@@ -84,31 +87,22 @@ float readWeight() {
   return g;
 }
 
-void broadcastEvent(const char* event) {
+void sendEvent(const char* event) {
   char msg[80];
   snprintf(msg, sizeof(msg), "{\"event\":\"%s\",\"grams\":%.1f}", event, currentWeight);
-  Serial.print("-> "); Serial.println(msg);
-  ws.broadcastTXT(msg);
+  Serial.print("-> "); Serial.println(msg);   // debug ผ่าน USB
+  PiSerial.println(msg);                       // ส่งจริงไป Pi ผ่าน UART2
 }
 
-void broadcastWeight() {
+void sendWeight() {
   char msg[64];
   snprintf(msg, sizeof(msg), "{\"event\":\"weight\",\"grams\":%.1f}", currentWeight);
-  ws.broadcastTXT(msg);
-}
-
-void onWs(uint8_t num, WStype_t type, uint8_t* payload, size_t len) {
-  if (type == WStype_CONNECTED) {
-    Serial.printf("WS client %u connected\n", num);
-    char msg[80];
-    snprintf(msg, sizeof(msg), "{\"event\":\"%s\",\"grams\":%.1f}",
-             currentState ? "detected" : "cleared", currentWeight);
-    ws.sendTXT(num, msg);
-  }
+  PiSerial.println(msg);
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(115200);                                              // USB debug
+  PiSerial.begin(115200, SERIAL_8N1, PI_RX_PIN, PI_TX_PIN);          // UART2 → Pi
 
   // IR
   analogReadResolution(12);
@@ -120,21 +114,10 @@ void setup() {
   delay(2000);
   scale.tare();
   Serial.println("HX711: ready");
-
-  // Wi-Fi
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("WiFi");
-  while (WiFi.status() != WL_CONNECTED) { delay(300); Serial.print("."); }
-  Serial.println();
-  Serial.print("IP: "); Serial.println(WiFi.localIP());
-  Serial.println("ตั้ง VITE_SENSOR_WS_URL=ws://<IP>:81/ ในไฟล์ .env.local ของเว็บ");
-
-  ws.begin();
-  ws.onEvent(onWs);
+  Serial.println("UART2 ready — ส่ง JSON event ไป Pi ที่ 115200 baud");
 }
 
 void loop() {
-  ws.loop();
   unsigned long now = millis();
 
   // IR poll (เร็ว — ตอบสนองทันทีที่วาง/หยิบ)
@@ -153,7 +136,7 @@ void loop() {
       if (sameReads >= STABLE_READS) {
         currentState = present;
         sameReads = 0;
-        broadcastEvent(currentState ? "detected" : "cleared");
+        sendEvent(currentState ? "detected" : "cleared");
       }
     }
   }
@@ -164,9 +147,9 @@ void loop() {
     currentWeight = readWeight();
   }
 
-  // ส่งน้ำหนักให้เว็บเป็นระยะ ขณะที่มีของวาง — เพื่อให้ตอน classify เสร็จมีค่า fresh
+  // ส่งน้ำหนักให้ Pi เป็นระยะ ขณะที่มีของวาง — เพื่อให้ตอน classify เสร็จมีค่า fresh
   if (currentState && now - lastWeightSend >= WEIGHT_BROADCAST_MS) {
     lastWeightSend = now;
-    broadcastWeight();
+    sendWeight();
   }
 }

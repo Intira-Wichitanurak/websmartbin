@@ -43,11 +43,21 @@ export default function CameraPage({ onResult }) {
       if (!navigator.mediaDevices?.getUserMedia) {
         setPhase('unsupported'); return
       }
+      // ลอง back camera ก่อน (มือถือ/แท็บเล็ตจะได้กล้องหลัง) — ถ้าไม่ได้
+      // (เช่น USB webcam บน PC/Pi ไม่มี facingMode) → fallback เป็นกล้องอะไรก็ได้
+      async function openCamera() {
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } },
+            audio: false
+          })
+        } catch (e) {
+          console.warn('[camera] environment-facing failed, falling back to any camera:', e?.name || e)
+          return await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        }
+      }
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' },
-          audio: false
-        })
+        const stream = await openCamera()
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
         streamRef.current = stream
         if (videoRef.current) {
@@ -55,7 +65,8 @@ export default function CameraPage({ onResult }) {
           await videoRef.current.play().catch(() => {})
         }
         setPhase('watching')
-      } catch {
+      } catch (e) {
+        console.error('[camera] getUserMedia failed:', e)
         setPhase('denied')
       }
     }

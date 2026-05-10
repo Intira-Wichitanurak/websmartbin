@@ -13,7 +13,7 @@
  * The client auto-reconnects every 3s if the socket drops.
  */
 
-const DEFAULT_URL    = 'ws://localhost:81/'
+const DEFAULT_URL    = 'ws://localhost:8181/'   // ตรงกับ scripts/serial-bridge.js
 const RECONNECT_MS   = 10000   // 10s between reconnect attempts (was 3s — too spammy)
 
 let singleton = null

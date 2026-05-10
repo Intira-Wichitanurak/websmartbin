@@ -193,19 +193,33 @@ export function speak(text, opts = {}) {
   u.volume = Math.max(0, Math.min(1, volume))
   if (thaiVoice) u.voice = thaiVoice
 
+  // Linux/Firefox without a Thai TTS engine sometimes never fires onend or
+  // onerror — speak() would then hang forever and freeze the result page
+  // flow. Cap the wait at ~120ms/char (with sane min/max) and resolve anyway
+  // so the UI keeps moving.
+  const safetyMs = Math.min(12000, Math.max(2000, clean.length * 120))
+
   return new Promise(resolve => {
+    let done = false
+    const finish = (afterChirp = false) => {
+      if (done) return
+      done = true
+      clearTimeout(safety)
+      if (afterChirp && chirpAfter) {
+        chirp({ from: 900, to: 1400, dur: 0.08, peak: 0.16, type: 'triangle' })
+      }
+      resolve()
+    }
+    const safety = setTimeout(() => finish(false), safetyMs)
+
     if (chirpBefore) {
       // Two quick rising chirps = a cute "eh-eh!" attention-getter.
-      // These layer on top so the sentence feels like a character expressing itself.
       chirp({ from: 900,  to: 1300, dur: 0.06, peak: 0.16, type: 'triangle' })
       chirp({ from: 1100, to: 1500, dur: 0.07, peak: 0.14, type: 'sine', delay: 0.07 })
     }
 
-    u.onend   = () => {
-      if (chirpAfter) chirp({ from: 900, to: 1400, dur: 0.08, peak: 0.16, type: 'triangle' })
-      resolve()
-    }
-    u.onerror = () => resolve()
+    u.onend   = () => finish(true)
+    u.onerror = () => finish(false)
 
     // Tiny delay so the intro chirp plays before the speech starts
     setTimeout(() => SS.speak(u), chirpBefore ? 140 : 0)

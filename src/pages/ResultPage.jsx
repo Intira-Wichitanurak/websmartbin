@@ -4,7 +4,7 @@ import Modal from '../components/Modal.jsx'
 import { WASTE_TYPES } from '../lib/classifyWaste.js'
 import { sfx, playVoice, stopSpeech } from '../lib/sounds.js'
 
-export default function ResultPage({ result, onHome }) {
+export default function ResultPage({ result, onHome, onFlowDone }) {
   const [popup, setPopup]       = useState(null)
   const [thankYou, setThankYou] = useState(false)
 
@@ -25,6 +25,7 @@ export default function ResultPage({ result, onHome }) {
         await playVoice('popup_blurry',
           'ลองถ่ายใหม่อีกครั้งนะ ครั้งนี้น้องคาปิจะคัดแยกประเภทถูกอย่างแน่นอน')
         if (stop()) return
+        onFlowDone?.()                               // speech finished → cleared can now goHome
         await sleep(3000); if (stop()) return
         onHome()
         return
@@ -36,6 +37,7 @@ export default function ResultPage({ result, onHome }) {
         await playVoice('popup_food',
           'กรุณาเขี่ยเศษอาหารทิ้งก่อน แล้วนำมาคัดแยกใหม่อีกครั้งน้า')
         if (stop()) return
+        onFlowDone?.()
         await sleep(3000); if (stop()) return
         onHome()
         return
@@ -61,8 +63,12 @@ export default function ResultPage({ result, onHome }) {
         { chirpAfter: true })
       if (stop()) return
 
-      // 4) hold the popup briefly, then go home
-      await sleep(3000); if (stop()) return
+      // Speech is fully done — release the cleared lock so removing the
+      // trash now snaps home immediately (no need to wait the full 5s).
+      onFlowDone?.()
+
+      // 4) hold the popup briefly, then go home if user hasn't already
+      await sleep(2000); if (stop()) return
       onHome()
     }
 
