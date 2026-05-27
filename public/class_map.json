@@ -1,0 +1,21 @@
+{
+  "classes": [
+    "Bottle",
+    "Cans",
+    "General",
+    "Foodpekage"
+  ],
+  "class2idx": {
+    "Bottle": 0,
+    "Cans": 1,
+    "General": 2,
+    "Foodpekage": 3
+  },
+  "idx2class": {
+    "0": "Bottle",
+    "1": "Cans",
+    "2": "General",
+    "3": "Foodpekage"
+  },
+  "image_size": 224
+}
