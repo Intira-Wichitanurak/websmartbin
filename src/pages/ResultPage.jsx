@@ -3,6 +3,7 @@ import Capybara from '../components/Capybara.jsx'
 import Modal from '../components/Modal.jsx'
 import { WASTE_TYPES } from '../lib/classifyWaste.js'
 import { sfx, playVoice, stopSpeech } from '../lib/sounds.js'
+import { relayForType, relayAllOff } from '../lib/relay.js'
 
 export default function ResultPage({ result, onHome, onFlowDone }) {
   const [popup, setPopup]       = useState(null)
@@ -43,8 +44,9 @@ export default function ResultPage({ result, onHome, onFlowDone }) {
         return
       }
 
-      // 1) success ding + announce verdict
+      // 1) success ding + announce verdict + light up the matching relay
       setPopup(null); sfx.success()
+      relayForType(result.type)
       const info = WASTE_TYPES[result.type] ?? WASTE_TYPES.general
       await sleep(700); if (stop()) return
       await playVoice(`result_${result.type}`,
@@ -73,7 +75,11 @@ export default function ResultPage({ result, onHome, onFlowDone }) {
     }
 
     run().catch(err => console.warn('result flow error:', err))
-    return () => { cancelled = true; stopSpeech() }
+    return () => {
+      cancelled = true
+      stopSpeech()
+      relayAllOff()                  // turn off the waste-type indicator when leaving
+    }
   }, [result])
 
   if (!result) return null

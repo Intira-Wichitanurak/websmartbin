@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "dev:bridge": "node scripts/serial-bridge.js",
-    "dev:all": "concurrently -n vite,bridge -c cyan,magenta \"npm:dev\" \"npm:dev:bridge\"",
+    "dev:model":  "python3 model_server.py",
+    "dev:all": "concurrently -n vite,bridge,model -c cyan,magenta,yellow \"npm:dev\" \"npm:dev:bridge\" \"npm:dev:model\"",
     "build": "vite build",
     "preview": "vite preview"
   },

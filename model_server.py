@@ -23,6 +23,8 @@ import os
 import io
 import json
 import base64
+import atexit
+import threading
 
 import torch
 import torch.nn as nn
@@ -31,11 +33,36 @@ import torchvision.transforms as T
 from PIL import Image
 from flask import Flask, request, jsonify
 
+# lgpio บน Pi 5 — relay control ผ่าน GPIO. ถ้า import ไม่ได้ (รันบนเครื่องอื่น)
+# จะ degrade gracefully: relay calls ทำงานเป็น no-op และเว็บก็ยังเรียก /relay ได้
+try:
+    import lgpio
+    _LGPIO_OK = True
+except Exception as e:
+    print(f'[relay] lgpio not available ({e}) — relay control disabled')
+    lgpio = None
+    _LGPIO_OK = False
+
 HERE        = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH  = os.path.join(HERE, 'public', 'best_model.pt')
 CLASSMAP    = os.path.join(HERE, 'public', 'class_map.json')
 HOST        = os.environ.get('MODEL_HOST', '0.0.0.0')
 PORT        = int(os.environ.get('MODEL_PORT', '8000'))
+
+# Relay config — 5 relays controlled by Pi GPIO.
+#   1..4 = waste type indicators (wet/recyclable/hazardous/general)
+#   5    = camera light (auto-off after CAMERA_IDLE_SEC of no activity)
+# Most cheap 4/8-channel relay modules are active-LOW (LOW = relay ON).
+# Override with env var if your module is active-HIGH: RELAY_ACTIVE_LOW=0
+RELAY_PINS = {
+    'wet':         17,
+    'recyclable':  27,
+    'hazardous':   22,
+    'general':     23,
+    'camera':      24,
+}
+RELAY_ACTIVE_LOW = os.environ.get('RELAY_ACTIVE_LOW', '1') != '0'
+CAMERA_IDLE_SEC  = int(os.environ.get('CAMERA_IDLE_SEC', '300'))   # 5 นาที
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -94,6 +121,103 @@ preprocess = T.Compose([
 
 MODEL, CLASSES = load_model()
 
+
+# ---------------- relay control (lgpio) ----------------
+_gpio_h     = None
+_relay_lock = threading.RLock()   # reentrant — camera_off_now() holds it then calls relay_set()
+_cam_timer  = None   # threading.Timer หรือ None — นับเวลา idle ของไฟกล้อง
+
+def _relay_level_for(on):
+    """on=True → ระดับ GPIO ที่ทำให้ relay ติด; on=False → ระดับที่ปิด"""
+    if RELAY_ACTIVE_LOW:
+        return 0 if on else 1
+    return 1 if on else 0
+
+
+def relay_set(name, on):
+    """ตั้งสถานะรีเลย์ตัวที่ระบุ (name = wet/recyclable/hazardous/general/camera)"""
+    if not _LGPIO_OK or _gpio_h is None:
+        return
+    pin = RELAY_PINS.get(name)
+    if pin is None:
+        return
+    with _relay_lock:
+        lgpio.gpio_write(_gpio_h, pin, _relay_level_for(on))
+
+
+def _all_classify_off():
+    for n in ('wet', 'recyclable', 'hazardous', 'general'):
+        relay_set(n, False)
+
+
+def _camera_off_internal():
+    global _cam_timer
+    _cam_timer = None
+    relay_set('camera', False)
+    print('[relay] camera light → OFF (idle timeout)', flush=True)
+
+
+def camera_keep_alive():
+    """เรียกเมื่อมีการใช้กล้อง — เปิดไฟกล้อง + รีเซ็ตเวลา idle เป็น 5 นาที"""
+    global _cam_timer
+    with _relay_lock:
+        relay_set('camera', True)
+        if _cam_timer is not None:
+            _cam_timer.cancel()
+        _cam_timer = threading.Timer(CAMERA_IDLE_SEC, _camera_off_internal)
+        _cam_timer.daemon = True
+        _cam_timer.start()
+
+
+def camera_off_now():
+    global _cam_timer
+    with _relay_lock:
+        if _cam_timer is not None:
+            _cam_timer.cancel()
+            _cam_timer = None
+        relay_set('camera', False)
+
+
+def relay_init():
+    """เปิด gpiochip + ตั้งทุกขาเป็น output ค่าเริ่มต้น = OFF"""
+    global _gpio_h
+    if not _LGPIO_OK:
+        return
+    try:
+        _gpio_h = lgpio.gpiochip_open(0)
+        off_level = _relay_level_for(False)
+        for name, pin in RELAY_PINS.items():
+            lgpio.gpio_claim_output(_gpio_h, pin, off_level)
+        print(f'[relay] ready (active-{"LOW" if RELAY_ACTIVE_LOW else "HIGH"}, '
+              f'camera idle {CAMERA_IDLE_SEC}s) pins={RELAY_PINS}')
+    except Exception as e:
+        print(f'[relay] init failed: {e}')
+        _gpio_h = None
+
+
+@atexit.register
+def relay_cleanup():
+    """ปิดรีเลย์ทุกตัวตอน server หยุด"""
+    global _cam_timer, _gpio_h
+    if _cam_timer is not None:
+        try: _cam_timer.cancel()
+        except Exception: pass
+        _cam_timer = None
+    if _LGPIO_OK and _gpio_h is not None:
+        try:
+            off_level = _relay_level_for(False)
+            for pin in RELAY_PINS.values():
+                try: lgpio.gpio_write(_gpio_h, pin, off_level)
+                except Exception: pass
+            lgpio.gpiochip_close(_gpio_h)
+        except Exception:
+            pass
+        _gpio_h = None
+
+
+relay_init()
+
+
 app = Flask(__name__)
 
 
@@ -149,6 +273,45 @@ def classify():
         'classes':     CLASSES,
         'idx':         best_idx,
     })
+
+
+@app.route('/relay', methods=['POST', 'OPTIONS'])
+def relay():
+    """
+    ควบคุมรีเลย์จากเว็บแอป — ส่ง JSON:
+       {"event": "classify",      "type": "wet"|"recyclable"|"hazardous"|"general"}
+       {"event": "camera_active"}   — เปิดไฟกล้อง + รีเซ็ตเวลา idle เป็น 5 นาที
+       {"event": "camera_off"}      — ปิดไฟกล้องทันที
+       {"event": "all_off"}         — ปิดรีเลย์ทุกตัว
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    payload = request.get_json(silent=True) or {}
+    event = (payload.get('event') or '').lower()
+
+    if event == 'classify':
+        wtype = payload.get('type')
+        _all_classify_off()
+        if wtype in RELAY_PINS and wtype != 'camera':
+            relay_set(wtype, True)
+            print(f'[relay] classify → {wtype} ON', flush=True)
+        return jsonify({'ok': True, 'type': wtype})
+
+    if event == 'camera_active':
+        camera_keep_alive()
+        return jsonify({'ok': True, 'camera': 'on'})
+
+    if event == 'camera_off':
+        camera_off_now()
+        return jsonify({'ok': True, 'camera': 'off'})
+
+    if event == 'all_off':
+        _all_classify_off()
+        camera_off_now()
+        return jsonify({'ok': True})
+
+    return jsonify({'ok': False, 'error': 'unknown event'}), 400
 
 
 @app.route('/health', methods=['GET'])

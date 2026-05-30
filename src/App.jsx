@@ -5,6 +5,7 @@ import ResultPage from './pages/ResultPage.jsx'
 import { isMuted, setMuted, unlockAudio, sfx, stopSpeech } from './lib/sounds.js'
 import { useSensor } from './hooks/useSensor.js'
 import { getSensor } from './lib/sensor.js'
+import { relayCameraActive } from './lib/relay.js'
 
 const STAGE_W = 1024
 const STAGE_H = 600
@@ -51,6 +52,10 @@ export default function App() {
 
   const sensorConnected = useSensor({
     detected: () => {
+      // Every time waste arrives, kick the camera light on + reset the
+      // 5-minute idle timer on the server. The light stays on across
+      // pages and only goes off if nothing new arrives for 5 minutes.
+      relayCameraActive()
       // Trigger the flow only from the welcome screen
       if (pageRef.current === 'ready') goCamera()
     },
