@@ -1,0 +1,24 @@
+{
+  "VideoCaptureAllowed": true,
+  "AudioCaptureAllowed": true,
+  "DefaultVideoCaptureSetting": 1,
+  "DefaultAudioCaptureSetting": 1,
+  "VideoCaptureAllowedUrls": [
+    "http://localhost:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:5173"
+  ],
+  "AudioCaptureAllowedUrls": [
+    "http://localhost:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:5173"
+  ],
+  "MediaStreamCameraAllowedUrls": [
+    "http://localhost:5173",
+    "http://localhost:4173"
+  ],
+  "MediaStreamMicAllowedUrls": [
+    "http://localhost:5173",
+    "http://localhost:4173"
+  ]
+}

@@ -5,7 +5,9 @@
 
 set -u
 
-PROJECT=/home/intira/websmartbin
+# Resolve project root from this script's location so it works for any
+# user / install path (no hard-coded /home/intira).
+PROJECT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 LOG=$PROJECT/kiosk.log
 URL=http://localhost:5173/
 
