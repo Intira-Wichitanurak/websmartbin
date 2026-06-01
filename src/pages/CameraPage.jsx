@@ -4,9 +4,15 @@ import { classifyWaste } from '../lib/classifyWaste.js'
 import { sfx, playVoice } from '../lib/sounds.js'
 import { getSensor } from '../lib/sensor.js'
 
-// เฉพาะ "กระป๋อง" (modelClass === 'Cans') ถ้าน้ำหนัก > เกณฑ์นี้ ถือว่ามีเศษอาหารติด
-// → เด้ง popup ให้เคาะทิ้งก่อน. ขยะประเภทอื่นไม่เช็คน้ำหนัก
-const FOOD_THRESHOLD_GRAMS = 200
+// เกณฑ์น้ำหนักเศษอาหารต่อชนิดขยะ (ตาม modelClass จากโมเดล)
+// น้ำหนักจาก HX711 > เกณฑ์ของชนิดนั้น = ถือว่ามีเศษอาหารติด → เด้ง popup ให้เคาะทิ้งก่อน
+// ชนิดที่ไม่อยู่ในตาราง (เช่น General) จะข้ามการเช็คน้ำหนัก
+const FOOD_THRESHOLD_GRAMS = {
+  Bottle:     100,
+  Cans:       150,
+  Foodpekage:  50,
+  // General — ไม่เช็ค
+}
 
 /**
  * Auto-capture flow:
@@ -146,13 +152,14 @@ export default function CameraPage({ onResult }) {
     setPhase('processing')
     const result = await classifyWaste(dataUrl)
 
-    // เช็คเศษอาหารเฉพาะตอนทายเป็น "กระป๋อง" — ถ้าน้ำหนักจาก load cell > 200g
-    // ถือว่ายังมีเศษอาหารติดอยู่ (เช่น น้ำในกระป๋อง / เศษอาหาร). ขยะอื่นข้ามไป
-    const grams = getSensor().lastWeight()
+    // เช็คเศษอาหารตามชนิดขยะ — ใช้ threshold ที่ตั้งไว้สำหรับ modelClass นั้น
+    // (ดู FOOD_THRESHOLD_GRAMS ด้านบน). ชนิดที่ไม่อยู่ในตารางจะข้ามการเช็คน้ำหนัก
+    const grams     = getSensor().lastWeight()
+    const threshold = FOOD_THRESHOLD_GRAMS[result.modelClass]
     const hasFoodResidue =
-      result.modelClass === 'Cans' &&
+      typeof threshold === 'number' &&
       typeof grams === 'number' &&
-      grams > FOOD_THRESHOLD_GRAMS
+      grams > threshold
 
     onResult({ image: dataUrl, ...result, hasFoodResidue, weight: grams })
   }

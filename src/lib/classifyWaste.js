@@ -63,8 +63,9 @@ export async function classifyWaste(imageDataUrl) {
 
     return {
       type: data.type ?? 'general',
+      modelClass: data.modelClass,    // CameraPage ใช้เลือก threshold เศษอาหารต่อชนิด
       confidence: clamp(data.confidence ?? 0, 0, 1),
-      hasFoodResidue: false,   // มาจาก load cell ใน CameraPage แทน
+      hasFoodResidue: false,          // มาจาก load cell ใน CameraPage แทน
       blurry: false,
       _debug: { idx: data.idx, modelClass: data.modelClass, probs: data.probs ?? [] },
     }
