@@ -2,20 +2,26 @@
   "classes": [
     "Bottle",
     "Cans",
-    "General",
-    "Foodpekage"
+    "Danger",
+    "Foodpekage",
+    "Freshfood",
+    "General"
   ],
   "class2idx": {
     "Bottle": 0,
     "Cans": 1,
-    "General": 2,
-    "Foodpekage": 3
+    "Danger": 2,
+    "Foodpekage": 3,
+    "Freshfood":4,
+    "General": 5
   },
   "idx2class": {
     "0": "Bottle",
     "1": "Cans",
-    "2": "General",
-    "3": "Foodpekage"
+    "2": "Danger",
+    "3": "Foodpekage",
+    "4": "Freshfood",
+    "5": "General"
   },
   "image_size": 224
 }
