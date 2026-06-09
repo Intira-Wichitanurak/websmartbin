@@ -1,15 +1,21 @@
 """
 Capybara Waste Sorter — PyTorch inference server
 
-โหลด public/best_model.pt (EfficientNetV2-S + custom head, 4 คลาส) แล้วเปิด HTTP
-endpoint ให้เว็บแอป (src/lib/classifyWaste.js) ส่งภาพมาแยกประเภท
+โหลด best_waste_classifier_EfficientNetV2-S.pth (EfficientNetV2-S fine‑tuned, 6 คลาส)
+แล้วเปิด HTTP endpoint ให้เว็บแอป (src/lib/classifyWaste.js) ส่งภาพมาแยกประเภท
 
-โมเดลคลาส (จาก class_map.json): Bottle, Cans, General, Foodpekage
+โมเดลคลาส (จาก class_map.json): Bottle, Cans, Danger, Foodpekage, Freshfood, General
 แมปเป็นชนิดขยะของแอป (WASTE_TYPES ใน classifyWaste.js):
     Bottle     -> recyclable
     Cans       -> recyclable
-    General    -> general
+    Danger     -> hazardous
+    Freshfood  -> wet
     Foodpekage -> general
+    General    -> general
+
+รองรับ checkpoint ได้ 2 รูปแบบ:
+  1. Wrapped: {'model': state_dict, 'classes': [...], 'val_acc': ...}
+  2. Raw state dict (features.* / classifier.*) พร้อม auto remap classifier key
 
 รัน:
     pip install flask torch torchvision pillow   (มีครบแล้วในเครื่องนี้)
@@ -27,7 +33,6 @@ import atexit
 import threading
 
 import torch
-import torch.nn as nn
 import torchvision.models as M
 import torchvision.transforms as T
 from PIL import Image
@@ -44,7 +49,7 @@ except Exception as e:
     _LGPIO_OK = False
 
 HERE        = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH  = os.path.join(HERE, 'public', 'best_model.pt')
+MODEL_PATH  = os.path.join(HERE, 'public', 'best_waste_classifier_EfficientNetV2-S.pth')
 CLASSMAP    = os.path.join(HERE, 'public', 'class_map.json')
 HOST        = os.environ.get('MODEL_HOST', '0.0.0.0')
 PORT        = int(os.environ.get('MODEL_PORT', '8000'))
@@ -68,44 +73,50 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # โมเดลคลาส (index ตาม class_map) -> ชนิดขยะของแอป
 CLASS_TO_APP_TYPE = {
-    'Bottle':     'recyclable',
-    'Cans':       'recyclable',
-    'General':    'general',
+    'Bottle': 'recyclable',
+    'Cans': 'recyclable',
+    'Danger': 'hazardous',
+    'Freshfood': 'wet',
     'Foodpekage': 'general',
+    'General': 'general',
 }
 
 
-# ---------------- model definition (ตรงกับตอน train) ----------------
-class WasteNet(nn.Module):
-    def __init__(self, n_classes=4, dropout=0.3):
-        super().__init__()
-        self.backbone = M.efficientnet_v2_s(weights=None)
-        self.backbone.classifier = nn.Identity()   # ใช้เป็น feature extractor (1280-d)
-        self.head = nn.Sequential(
-            nn.Linear(1280, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(512, n_classes),
-        )
-
-    def forward(self, x):
-        return self.head(self.backbone(x))
-
-
+# ---------------- model loader (EfficientNetV2-S, N classes) ----------------
 def load_model():
-    ckpt = torch.load(MODEL_PATH, map_location='cpu', weights_only=False)
-    classes = ckpt.get('classes')
+    state_dict = torch.load(MODEL_PATH, map_location='cpu', weights_only=False)
+    classes = None
+    val_acc = None
+
+    # support both wrapped {'model':..., 'classes':..., 'val_acc':...} and raw state dict
+    if isinstance(state_dict, dict) and 'model' in state_dict:
+        classes = state_dict.get('classes')
+        val_acc = state_dict.get('val_acc')
+        state_dict = state_dict['model']
+    elif isinstance(state_dict, dict) and 'state_dict' in state_dict:
+        state_dict = state_dict['state_dict']
+
     if classes is None:
         with open(CLASSMAP, encoding='utf-8') as f:
             classes = json.load(f)['classes']
-    model = WasteNet(n_classes=len(classes))
-    model.load_state_dict(ckpt['model'], strict=True)
+
+    n_classes = len(classes)
+
+    # auto-remap classifier keys: classifier.1.1.* → classifier.1.*
+    # (some training scripts wrap classifier in an extra Sequential)
+    state_dict = {
+        k.replace('classifier.1.1.', 'classifier.1.'): v
+        for k, v in state_dict.items()
+    }
+
+    model = M.efficientnet_v2_s(weights=None, num_classes=n_classes)
+    model.load_state_dict(state_dict, strict=True)
     model.eval().to(DEVICE)
+
     print(f'[model] loaded {MODEL_PATH}')
     print(f'[model] classes: {classes}  device: {DEVICE}')
-    if 'val_acc' in ckpt:
-        print(f'[model] checkpoint val_acc: {ckpt["val_acc"]}')
+    if val_acc is not None:
+        print(f'[model] checkpoint val_acc: {val_acc}')
     return model, classes
 
 
@@ -277,13 +288,6 @@ def classify():
 
 @app.route('/relay', methods=['POST', 'OPTIONS'])
 def relay():
-    """
-    ควบคุมรีเลย์จากเว็บแอป — ส่ง JSON:
-       {"event": "classify",      "type": "wet"|"recyclable"|"hazardous"|"general"}
-       {"event": "camera_active"}   — เปิดไฟกล้อง + รีเซ็ตเวลา idle เป็น 5 นาที
-       {"event": "camera_off"}      — ปิดไฟกล้องทันที
-       {"event": "all_off"}         — ปิดรีเลย์ทุกตัว
-    """
     if request.method == 'OPTIONS':
         return ('', 204)
 
@@ -292,10 +296,21 @@ def relay():
 
     if event == 'classify':
         wtype = payload.get('type')
+
         _all_classify_off()
+
         if wtype in RELAY_PINS and wtype != 'camera':
             relay_set(wtype, True)
             print(f'[relay] classify → {wtype} ON', flush=True)
+
+            threading.Timer(
+                20,
+                lambda: (
+                    relay_set(wtype, False),
+                    print(f'[relay] classify → {wtype} OFF', flush=True)
+                )
+            ).start()
+
         return jsonify({'ok': True, 'type': wtype})
 
     if event == 'camera_active':
@@ -312,7 +327,6 @@ def relay():
         return jsonify({'ok': True})
 
     return jsonify({'ok': False, 'error': 'unknown event'}), 400
-
 
 @app.route('/health', methods=['GET'])
 def health():
