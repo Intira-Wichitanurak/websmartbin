@@ -56,7 +56,7 @@ PORT        = int(os.environ.get('MODEL_PORT', '8000'))
 
 # Relay config — 5 relays controlled by Pi GPIO.
 #   1..4 = waste type indicators (wet/recyclable/hazardous/general)
-#   5    = camera light (auto-off after CAMERA_IDLE_SEC of no activity)
+#   5    = camera light
 # Most cheap 4/8-channel relay modules are active-LOW (LOW = relay ON).
 # Override with env var if your module is active-HIGH: RELAY_ACTIVE_LOW=0
 RELAY_PINS = {
@@ -67,7 +67,7 @@ RELAY_PINS = {
     'camera':      24,
 }
 RELAY_ACTIVE_LOW = os.environ.get('RELAY_ACTIVE_LOW', '1') != '0'
-CAMERA_IDLE_SEC  = int(os.environ.get('CAMERA_IDLE_SEC', '300'))   # 5 นาที
+
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -135,8 +135,7 @@ MODEL, CLASSES = load_model()
 
 # ---------------- relay control (lgpio) ----------------
 _gpio_h     = None
-_relay_lock = threading.RLock()   # reentrant — camera_off_now() holds it then calls relay_set()
-_cam_timer  = None   # threading.Timer หรือ None — นับเวลา idle ของไฟกล้อง
+_relay_lock = threading.RLock()
 
 def _relay_level_for(on):
     """on=True → ระดับ GPIO ที่ทำให้ relay ติด; on=False → ระดับที่ปิด"""
@@ -161,32 +160,13 @@ def _all_classify_off():
         relay_set(n, False)
 
 
-def _camera_off_internal():
-    global _cam_timer
-    _cam_timer = None
-    relay_set('camera', False)
-    print('[relay] camera light → OFF (idle timeout)', flush=True)
-
-
 def camera_keep_alive():
-    """เรียกเมื่อมีการใช้กล้อง — เปิดไฟกล้อง + รีเซ็ตเวลา idle เป็น 5 นาที"""
-    global _cam_timer
-    with _relay_lock:
-        relay_set('camera', True)
-        if _cam_timer is not None:
-            _cam_timer.cancel()
-        _cam_timer = threading.Timer(CAMERA_IDLE_SEC, _camera_off_internal)
-        _cam_timer.daemon = True
-        _cam_timer.start()
+    """เรียกเมื่อมีการใช้กล้อง — เปิดไฟกล้อง"""
+    relay_set('camera', True)
 
 
 def camera_off_now():
-    global _cam_timer
-    with _relay_lock:
-        if _cam_timer is not None:
-            _cam_timer.cancel()
-            _cam_timer = None
-        relay_set('camera', False)
+    relay_set('camera', False)
 
 
 def relay_init():
@@ -199,8 +179,7 @@ def relay_init():
         off_level = _relay_level_for(False)
         for name, pin in RELAY_PINS.items():
             lgpio.gpio_claim_output(_gpio_h, pin, off_level)
-        print(f'[relay] ready (active-{"LOW" if RELAY_ACTIVE_LOW else "HIGH"}, '
-              f'camera idle {CAMERA_IDLE_SEC}s) pins={RELAY_PINS}')
+        print(f'[relay] ready (active-{"LOW" if RELAY_ACTIVE_LOW else "HIGH"}) pins={RELAY_PINS}')
     except Exception as e:
         print(f'[relay] init failed: {e}')
         _gpio_h = None
@@ -209,11 +188,7 @@ def relay_init():
 @atexit.register
 def relay_cleanup():
     """ปิดรีเลย์ทุกตัวตอน server หยุด"""
-    global _cam_timer, _gpio_h
-    if _cam_timer is not None:
-        try: _cam_timer.cancel()
-        except Exception: pass
-        _cam_timer = None
+    global _gpio_h
     if _LGPIO_OK and _gpio_h is not None:
         try:
             off_level = _relay_level_for(False)

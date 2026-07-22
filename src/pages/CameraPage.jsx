@@ -43,6 +43,8 @@ export default function CameraPage({ onResult }) {
   // phase: init | denied | unsupported | watching | scanning | capturing | processing
   const [phase, setPhase] = useState('init')
 
+  const CAMERA_ZOOM = 1.5
+
   /* ---------------- start camera ---------------- */
   useEffect(() => {
     let cancelled = false
@@ -141,8 +143,18 @@ export default function CameraPage({ onResult }) {
     if (!v || !c) return
     const w = v.videoWidth || 640
     const h = v.videoHeight || 480
-    c.width = w; c.height = h
-    c.getContext('2d').drawImage(v, 0, 0, w, h)
+
+    if (CAMERA_ZOOM > 1) {
+      const cropW = w / CAMERA_ZOOM
+      const cropH = h / CAMERA_ZOOM
+      const sx = (w - cropW) / 2
+      const sy = (h - cropH) / 2
+      c.width = cropW; c.height = cropH
+      c.getContext('2d').drawImage(v, sx, sy, cropW, cropH, 0, 0, cropW, cropH)
+    } else {
+      c.width = w; c.height = h
+      c.getContext('2d').drawImage(v, 0, 0, w, h)
+    }
     const dataUrl = c.toDataURL('image/jpeg', 0.9)
 
     // brief shutter "flash" beat before processing screen
@@ -232,6 +244,7 @@ export default function CameraPage({ onResult }) {
               playsInline
               muted
               className={`w-full h-full object-cover ${phase === 'denied' || phase === 'unsupported' || phase === 'init' ? 'opacity-0' : ''}`}
+              style={CAMERA_ZOOM > 1 ? { transform: `scale(${CAMERA_ZOOM})`, transformOrigin: 'center center' } : undefined}
             />
 
             {/* corner brackets — visible whenever we're actively framing */}
