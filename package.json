@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:bridge": "node scripts/serial-bridge.js",
+    "dev:hub": "node scripts/ws-hub.js",
     "dev:model":  "python3 model_server.py",
-    "dev:all": "concurrently -n vite,bridge,model -c cyan,magenta,yellow \"npm:dev\" \"npm:dev:bridge\" \"npm:dev:model\"",
+    "dev:all": "concurrently -n vite,hub,model -c cyan,magenta,yellow \"npm:dev\" \"npm:dev:hub\" \"npm:dev:model\"",
     "build": "vite build",
     "preview": "vite preview"
   },

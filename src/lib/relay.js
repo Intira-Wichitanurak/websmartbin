@@ -1,56 +1,58 @@
 /**
- * Relay control — fire-and-forget HTTP POST to the Python model server
- * (model_server.py) which controls 5 GPIO relays on the Pi:
+ * Relay control — แยก  2 เส้นทางตามสถาปัตยกรรม:
  *
- *   wet         → GPIO 17 (pin 11)
- *   recyclable  → GPIO 27 (pin 13)
- *   hazardous   → GPIO 22 (pin 15)
- *   general     → GPIO 23 (pin 16)
- *   camera      → GPIO 24 (pin 18)   — auto-off after 5 min of inactivity
+ *   ไฟบอกประเภทขยะ 4 ดวง (wet/recyclable/hazardous/general)
+ *     → ส่งผ่าน WebSocket hub ไป ESP32 NODE #2  (getSensor().send)
  *
- * The endpoint URL defaults to <model api host>/relay so it follows whatever
- * VITE_MODEL_API_URL is set to. Override with VITE_RELAY_API_URL if you want
- * to point the relay calls at a different server.
+ *   ไฟกล้อง 1 ดวง
+ *     → ยิง HTTP POST ไป model_server.py (/camera) ที่คุม Pi GPIO เอง
  *
- * All calls are no-fail (silent .catch) so the UI keeps working even when
- * the model/relay server isn't running (e.g. running `npm run dev` alone).
+ * ทุกคำสั่งเป็น no-fail (เงียบถ้า socket/server ยังไม่พร้อม)
  */
 
-const MODEL_API_URL = import.meta.env?.VITE_MODEL_API_URL || 'http://localhost:8000/classify'
-const RELAY_API_URL =
-  import.meta.env?.VITE_RELAY_API_URL ||
-  MODEL_API_URL.replace(/\/classify\/?$/, '/relay')
+import { getSensor } from './sensor.js'
 
-function post(payload) {
-  return fetch(RELAY_API_URL, {
+const MODEL_API_URL = import.meta.env?.VITE_MODEL_API_URL || 'http://localhost:8000/classify'
+const CAMERA_API_URL =
+  import.meta.env?.VITE_CAMERA_API_URL ||
+  MODEL_API_URL.replace(/\/classify\/?$/, '/camera')
+
+/** ไฟประเภทขยะ → WebSocket ไป ESP32 #2 */
+function sendRelay(payload) {
+  getSensor().send({ node: 'relay', ...payload })
+}
+
+/** ไฟกล้อง → HTTP ไป Pi (model_server.py) */
+function postCamera(on) {
+  return fetch(CAMERA_API_URL, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify(payload),
+    body:    JSON.stringify({ on }),
   }).catch(err => {
-    // Server may be offline (dev without model server) — don't spam errors
-    if (!post._warned) {
-      console.warn('[relay] server unreachable at', RELAY_API_URL, '—', err?.message || err)
-      post._warned = true
+    if (!postCamera._warned) {
+      console.warn('[relay] camera server unreachable at', CAMERA_API_URL, '—', err?.message || err)
+      postCamera._warned = true
     }
   })
 }
 
-/** Turn on the relay that matches the classification result; turn off the others. */
+/** เปิดรีเลย์ประเภทขยะที่ตรงกับผลจำแนก ปิดตัวอื่น (ESP32 ดับเองใน 20s) */
 export function relayForType(type) {
-  return post({ event: 'classify', type })
+  sendRelay({ event: 'classify', type })
 }
 
-/** Tell the server the camera is currently in use — keeps the camera light on, resets the 5-min idle timer. */
+/** เปิดไฟกล้อง (Pi GPIO) */
 export function relayCameraActive() {
-  return post({ event: 'camera_active' })
+  postCamera(true)
 }
 
-/** Force the camera light off now (don't wait for idle timeout). */
+/** ปิดไฟกล้อง (Pi GPIO) */
 export function relayCameraOff() {
-  return post({ event: 'camera_off' })
+  postCamera(false)
 }
 
-/** Turn off every relay. */
+/** ปิดไฟประเภทขยะทุกดวง (ESP32 #2) + ปิดไฟกล้อง (Pi) */
 export function relayAllOff() {
-  return post({ event: 'all_off' })
+  sendRelay({ event: 'all_off' })
+  postCamera(false)
 }

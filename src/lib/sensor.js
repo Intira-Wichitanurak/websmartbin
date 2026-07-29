@@ -1,27 +1,29 @@
 /**
- * WebSocket sensor client — connects to an ESP32 (or any device) that
- * broadcasts events: "detected" when waste is placed, "cleared" when removed.
+ * WebSocket hub client — เชื่อมเข้า WebSocket hub บน Pi (scripts/ws-hub.js)
+ * ที่รวมทุกอุปกรณ์ ESP32 ไว้ที่เดียว
  *
- * The ESP32 should host a WebSocket server (port 81 is conventional with the
- * `WebSocketsServer` Arduino library) and broadcast text messages such as
- * "detected" / "cleared", or JSON like {"event":"detected"}.
+ * รับ (จาก ESP32 ผ่าน hub):
+ *   node="sensor" → event "detected" / "cleared" / "weight"  (+ grams)
+ *   node="bins"   → event "levels"  (+ bins: [{i,cm,pct,color}, ...])
  *
- * Configure the WebSocket URL via Vite env var:
- *     VITE_SENSOR_WS_URL=ws://192.168.1.42:81/
- * (set in .env / .env.local). Defaults to ws://localhost:81/ for local dev.
+ * ส่ง (ไป ESP32 ผ่าน hub) — ใช้ผ่าน getSensor().send(obj) เช่นใน src/lib/relay.js:
+ *   {node:"relay", event:"classify", type:"wet"}      → ESP32 #2 (relay)
+ *   {node:"leds",  event:"set", leds:[...]}            → ESP32 #3 (RGB LED)
  *
- * The client auto-reconnects every 3s if the socket drops.
+ * ตั้ง URL ผ่าน env:  VITE_SENSOR_WS_URL=ws://192.168.50.1:8181/
+ * (Pi เป็น WiFi AP ที่ IP 192.168.50.1 — ดู scripts/setup-ap.sh)
+ * ค่าเริ่มต้น ws://localhost:8181/ สำหรับ dev บนเครื่องเดียว
+ *
+ * auto-reconnect ทุก 10s ถ้าหลุด
  */
 
-const DEFAULT_URL    = 'ws://localhost:8181/'   // ตรงกับ scripts/serial-bridge.js
-const RECONNECT_MS   = 10000   // 10s between reconnect attempts (was 3s — too spammy)
+const DEFAULT_URL  = 'ws://localhost:8181/'   // ตรงกับ scripts/ws-hub.js
+const RECONNECT_MS = 10000
 
 let singleton = null
 
 export function getSensor() {
   if (!singleton) {
-    // Skip WebSocket entirely if explicitly disabled — useful when developing
-    // without an ESP32 around (avoids the recurring "WebSocket failed" log).
     if (import.meta.env?.VITE_SENSOR_ENABLED === 'false') {
       singleton = createStub()
     } else {
@@ -32,24 +34,26 @@ export function getSensor() {
   return singleton
 }
 
-/** Inert sensor — does nothing, but exposes the same API. */
+/** Inert client — ทำอะไรไม่ได้ แต่มี API เหมือนกัน (ตอน dev ไม่มี ESP32) */
 function createStub() {
   const listeners = new Set()
   let lastEvent = null
   let lastWeight = null
+  let lastBins = null
   console.info('[sensor] disabled (set VITE_SENSOR_ENABLED=true and VITE_SENSOR_WS_URL to enable)')
   return {
     on(fn) { listeners.add(fn); return () => listeners.delete(fn) },
     isConnected() { return false },
+    send() { /* no-op */ },
     dispatch(event, data) {
       lastEvent = event
-      if (data && typeof data === 'object' && typeof data.grams === 'number') {
-        lastWeight = data.grams
-      }
+      if (data?.grams != null) lastWeight = data.grams
+      if (event === 'levels' && data?.bins) lastBins = data.bins
       listeners.forEach(fn => fn(event, data))
     },
     lastEvent:  () => lastEvent,
-    lastWeight: () => lastWeight
+    lastWeight: () => lastWeight,
+    lastBins:   () => lastBins,
   }
 }
 
@@ -59,13 +63,15 @@ function createSensor(url) {
   let reconnectTimer = null
   let connected = false
   let lastEvent = null
-  let lastWeight = null   // grams — populated from any event payload that carries `grams`
+  let lastWeight = null
+  let lastBins = null
 
   function emit(event, data) {
     lastEvent = event
     if (data && typeof data === 'object' && typeof data.grams === 'number') {
       lastWeight = data.grams
     }
+    if (event === 'levels' && Array.isArray(data?.bins)) lastBins = data.bins
     listeners.forEach(fn => { try { fn(event, data) } catch (e) { console.error(e) } })
   }
 
@@ -86,7 +92,19 @@ function createSensor(url) {
     ws.onmessage = (msg) => {
       let payload = msg.data
       try { payload = JSON.parse(payload) } catch { /* plain string */ }
-      const event = typeof payload === 'string' ? payload.trim().toLowerCase() : (payload?.event || '').toLowerCase()
+
+      // plain string (เช่น dev dispatch) → ใช้เป็นชื่อ event ตรงๆ
+      if (typeof payload === 'string') {
+        const event = payload.trim().toLowerCase()
+        if (event) emit(event, null)
+        return
+      }
+
+      // เราสนใจเฉพาะ node ที่รับเข้า: sensor + bins (relay/leds เป็นคำสั่งขาออก)
+      const node = (payload.node || '').toLowerCase()
+      if (node && node !== 'sensor' && node !== 'bins') return
+
+      const event = (payload.event || '').toLowerCase()
       if (!event) return
       emit(event, payload)
     }
@@ -114,11 +132,17 @@ function createSensor(url) {
   return {
     on(fn)        { listeners.add(fn); return () => listeners.delete(fn) },
     isConnected() { return connected },
-    /** Manually dispatch an event (used for dev keyboard shortcuts) */
+    /** ส่ง object ไป hub (ESP32 ปลายทางกรองด้วยฟิลด์ node) — no-fail ถ้ายังไม่ต่อ */
+    send(obj) {
+      try {
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj))
+      } catch (e) { /* socket ยังไม่พร้อม — เงียบไว้ */ }
+    },
+    /** dispatch event ในเครื่อง (ใช้กับปุ่มลัด dev) */
     dispatch(event, data) { emit(event.toLowerCase(), data) },
-    /** What the last event we saw was — handy for late subscribers */
     lastEvent:    () => lastEvent,
-    /** Latest weight reading (grams) from the load cell, or null if never seen */
-    lastWeight:   () => lastWeight
+    lastWeight:   () => lastWeight,
+    /** ระดับขยะล่าสุดของถังทุกใบ (array) หรือ null ถ้ายังไม่เคยได้รับ */
+    lastBins:     () => lastBins,
   }
 }

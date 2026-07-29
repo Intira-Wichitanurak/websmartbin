@@ -4,6 +4,9 @@ Capybara Waste Sorter — PyTorch inference server
 โหลด best_waste_classifier_EfficientNetV2-S.pth (EfficientNetV2-S fine‑tuned, 6 คลาส)
 แล้วเปิด HTTP endpoint ให้เว็บแอป (src/lib/classifyWaste.js) ส่งภาพมาแยกประเภท
 
+หมายเหตุ: การคุมรีเลย์/ไฟกล้อง ย้ายไปอยู่ที่ ESP32 NODE #2 (คุยผ่าน WebSocket hub)
+แล้ว — เซิร์ฟเวอร์นี้ทำแค่ AI classification อย่างเดียว ไม่ยุ่ง GPIO อีกต่อไป
+
 โมเดลคลาส (จาก class_map.json): Bottle, Cans, Danger, Foodpekage, Freshfood, General
 แมปเป็นชนิดขยะของแอป (WASTE_TYPES ใน classifyWaste.js):
     Bottle     -> recyclable
@@ -29,8 +32,6 @@ import os
 import io
 import json
 import base64
-import atexit
-import threading
 
 import torch
 import torchvision.models as M
@@ -38,38 +39,67 @@ import torchvision.transforms as T
 from PIL import Image
 from flask import Flask, request, jsonify
 
-# lgpio บน Pi 5 — relay control ผ่าน GPIO. ถ้า import ไม่ได้ (รันบนเครื่องอื่น)
-# จะ degrade gracefully: relay calls ทำงานเป็น no-op และเว็บก็ยังเรียก /relay ได้
-try:
-    import lgpio
-    _LGPIO_OK = True
-except Exception as e:
-    print(f'[relay] lgpio not available ({e}) — relay control disabled')
-    lgpio = None
-    _LGPIO_OK = False
-
 HERE        = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH  = os.path.join(HERE, 'public', 'best_waste_classifier_EfficientNetV2-S.pth')
 CLASSMAP    = os.path.join(HERE, 'public', 'class_map.json')
 HOST        = os.environ.get('MODEL_HOST', '0.0.0.0')
 PORT        = int(os.environ.get('MODEL_PORT', '8000'))
 
-# Relay config — 5 relays controlled by Pi GPIO.
-#   1..4 = waste type indicators (wet/recyclable/hazardous/general)
-#   5    = camera light
-# Most cheap 4/8-channel relay modules are active-LOW (LOW = relay ON).
-# Override with env var if your module is active-HIGH: RELAY_ACTIVE_LOW=0
-RELAY_PINS = {
-    'wet':         17,
-    'recyclable':  27,
-    'hazardous':   22,
-    'general':     23,
-    'camera':      24,
-}
-RELAY_ACTIVE_LOW = os.environ.get('RELAY_ACTIVE_LOW', '1') != '0'
-
-
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+# ---------------- camera light (Pi GPIO via lgpio) ----------------
+# ไฟกล้อง 1 ดวง คุมด้วย Pi โดยตรง (ไฟบอกประเภทขยะ 4 ดวงย้ายไปอยู่ที่ ESP32 #2)
+# ถ้า import lgpio ไม่ได้ (รันบนเครื่องอื่น) → degrade เป็น no-op, /camera ยังเรียกได้
+try:
+    import atexit
+    import lgpio
+    _LGPIO_OK = True
+except Exception as e:
+    print(f'[camera] lgpio not available ({e}) — camera light disabled')
+    lgpio = None
+    _LGPIO_OK = False
+
+CAMERA_PIN        = int(os.environ.get('CAMERA_PIN', '24'))
+CAMERA_ACTIVE_LOW = os.environ.get('CAMERA_ACTIVE_LOW', '1') != '0'
+_cam_h = None
+
+def _cam_level(on):
+    if CAMERA_ACTIVE_LOW:
+        return 0 if on else 1
+    return 1 if on else 0
+
+def camera_light(on):
+    if not _LGPIO_OK or _cam_h is None:
+        return
+    lgpio.gpio_write(_cam_h, CAMERA_PIN, _cam_level(on))
+
+def camera_init():
+    global _cam_h
+    if not _LGPIO_OK:
+        return
+    try:
+        _cam_h = lgpio.gpiochip_open(0)
+        lgpio.gpio_claim_output(_cam_h, CAMERA_PIN, _cam_level(False))
+        print(f'[camera] ready (pin {CAMERA_PIN}, active-{"LOW" if CAMERA_ACTIVE_LOW else "HIGH"})')
+    except Exception as e:
+        print(f'[camera] init failed: {e}')
+        _cam_h = None
+
+if _LGPIO_OK:
+    @atexit.register
+    def _camera_cleanup():
+        global _cam_h
+        if _cam_h is not None:
+            try:
+                lgpio.gpio_write(_cam_h, CAMERA_PIN, _cam_level(False))
+                lgpio.gpiochip_close(_cam_h)
+            except Exception:
+                pass
+            _cam_h = None
+
+camera_init()
+
 
 # โมเดลคลาส (index ตาม class_map) -> ชนิดขยะของแอป
 CLASS_TO_APP_TYPE = {
@@ -133,77 +163,6 @@ preprocess = T.Compose([
 MODEL, CLASSES = load_model()
 
 
-# ---------------- relay control (lgpio) ----------------
-_gpio_h     = None
-_relay_lock = threading.RLock()
-
-def _relay_level_for(on):
-    """on=True → ระดับ GPIO ที่ทำให้ relay ติด; on=False → ระดับที่ปิด"""
-    if RELAY_ACTIVE_LOW:
-        return 0 if on else 1
-    return 1 if on else 0
-
-
-def relay_set(name, on):
-    """ตั้งสถานะรีเลย์ตัวที่ระบุ (name = wet/recyclable/hazardous/general/camera)"""
-    if not _LGPIO_OK or _gpio_h is None:
-        return
-    pin = RELAY_PINS.get(name)
-    if pin is None:
-        return
-    with _relay_lock:
-        lgpio.gpio_write(_gpio_h, pin, _relay_level_for(on))
-
-
-def _all_classify_off():
-    for n in ('wet', 'recyclable', 'hazardous', 'general'):
-        relay_set(n, False)
-
-
-def camera_keep_alive():
-    """เรียกเมื่อมีการใช้กล้อง — เปิดไฟกล้อง"""
-    relay_set('camera', True)
-
-
-def camera_off_now():
-    relay_set('camera', False)
-
-
-def relay_init():
-    """เปิด gpiochip + ตั้งทุกขาเป็น output ค่าเริ่มต้น = OFF"""
-    global _gpio_h
-    if not _LGPIO_OK:
-        return
-    try:
-        _gpio_h = lgpio.gpiochip_open(0)
-        off_level = _relay_level_for(False)
-        for name, pin in RELAY_PINS.items():
-            lgpio.gpio_claim_output(_gpio_h, pin, off_level)
-        print(f'[relay] ready (active-{"LOW" if RELAY_ACTIVE_LOW else "HIGH"}) pins={RELAY_PINS}')
-    except Exception as e:
-        print(f'[relay] init failed: {e}')
-        _gpio_h = None
-
-
-@atexit.register
-def relay_cleanup():
-    """ปิดรีเลย์ทุกตัวตอน server หยุด"""
-    global _gpio_h
-    if _LGPIO_OK and _gpio_h is not None:
-        try:
-            off_level = _relay_level_for(False)
-            for pin in RELAY_PINS.values():
-                try: lgpio.gpio_write(_gpio_h, pin, off_level)
-                except Exception: pass
-            lgpio.gpiochip_close(_gpio_h)
-        except Exception:
-            pass
-        _gpio_h = None
-
-
-relay_init()
-
-
 app = Flask(__name__)
 
 
@@ -261,47 +220,17 @@ def classify():
     })
 
 
-@app.route('/relay', methods=['POST', 'OPTIONS'])
-def relay():
+@app.route('/camera', methods=['POST', 'OPTIONS'])
+def camera():
+    """เปิด/ปิดไฟกล้อง (Pi GPIO). body: {"on": true|false}"""
     if request.method == 'OPTIONS':
         return ('', 204)
-
     payload = request.get_json(silent=True) or {}
-    event = (payload.get('event') or '').lower()
+    on = bool(payload.get('on'))
+    camera_light(on)
+    print(f'[camera] light -> {"ON" if on else "OFF"}', flush=True)
+    return jsonify({'ok': True, 'camera': 'on' if on else 'off'})
 
-    if event == 'classify':
-        wtype = payload.get('type')
-
-        _all_classify_off()
-
-        if wtype in RELAY_PINS and wtype != 'camera':
-            relay_set(wtype, True)
-            print(f'[relay] classify → {wtype} ON', flush=True)
-
-            threading.Timer(
-                20,
-                lambda: (
-                    relay_set(wtype, False),
-                    print(f'[relay] classify → {wtype} OFF', flush=True)
-                )
-            ).start()
-
-        return jsonify({'ok': True, 'type': wtype})
-
-    if event == 'camera_active':
-        camera_keep_alive()
-        return jsonify({'ok': True, 'camera': 'on'})
-
-    if event == 'camera_off':
-        camera_off_now()
-        return jsonify({'ok': True, 'camera': 'off'})
-
-    if event == 'all_off':
-        _all_classify_off()
-        camera_off_now()
-        return jsonify({'ok': True})
-
-    return jsonify({'ok': False, 'error': 'unknown event'}), 400
 
 @app.route('/health', methods=['GET'])
 def health():
