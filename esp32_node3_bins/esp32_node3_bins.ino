@@ -9,21 +9,21 @@
     {"node":"bins","event":"levels","bins":[
         {"i":0,"cm":18.2,"pct":40,"color":"green"}, ... ]}
 
-  รับ override สี LED ได้ (node="leds"):
-    {"node":"leds","event":"set","leds":[{"i":0,"r":1,"g":0,"b":0}, ...]}
+  รับ override สี LED ได้ (node="leds") — สี = "red"/"yellow"/"green":
+    {"node":"leds","event":"set","leds":[{"i":0,"color":"red"}, ...]}
     {"node":"leds","event":"auto"}    // กลับไปให้ไฟตามระดับถังอัตโนมัติ
 
   Library: WebSockets (Links2004) + ArduinoJson
 
   การต่อสาย — HC-SR04 (ต่อ ECHO ผ่านตัวแบ่งแรงดัน 5V→3.3V ทุกตัว):
-    bin0 TRIG=GPIO13 ECHO=GPIO34     bin1 TRIG=GPIO4  ECHO=GPIO35
-    bin2 TRIG=GPIO2  ECHO=GPIO36     bin3 TRIG=GPIO15 ECHO=GPIO39
-    (GPIO34-39 = input-only เหมาะกับ ECHO)
+    bin0 TRIG=GPIO5  ECHO=GPIO18     bin1 TRIG=GPIO17 ECHO=GPIO16
+    bin2 TRIG=GPIO4  ECHO=GPIO2      bin3 TRIG=GPIO15 ECHO=GPIO19
 
-  การต่อสาย — RGB LED (common-cathode, 3 ขาต่อดวง, มี R จำกัดกระแสทุกขา):
-    LED0 R=GPIO25 G=GPIO26 B=GPIO27     LED1 R=GPIO14 G=GPIO12 B=GPIO33
-    LED2 R=GPIO32 G=GPIO5  B=GPIO18     LED3 R=GPIO19 G=GPIO21 B=GPIO22
-    ถ้าเป็น common-anode ให้ตั้ง LED_COMMON_ANODE = true
+  การต่อสาย — LED 3 สีแยกดวง (แดง/เหลือง/เขียว, active-HIGH = ต่อ common-cathode):
+    mod1 R=GPIO23 Y=GPIO22 G=GPIO21     mod2 R=GPIO13 Y=GPIO12 G=GPIO14
+    mod3 R=GPIO27 Y=GPIO26 G=GPIO25     mod4 R=GPIO33 Y=GPIO3  G=GPIO32
+    ถ้าไฟกลับด้าน (ติดตอนควรดับ) ให้ตั้ง LED_ACTIVE_HIGH = false
+    * GPIO3 = RX0: ถ้า upload ไม่ผ่าน ให้ถอดขา Y ของ mod4 ตอนอัปโหลด
 */
 
 #include <WiFi.h>
@@ -37,21 +37,21 @@
 #define HUB_PATH   "/"
 
 const int  N_BIN = 4;
-const bool LED_COMMON_ANODE = false;
+const bool LED_ACTIVE_HIGH = true;   // common-cathode: HIGH = ติด (ถ้ากลับด้านให้ false)
 
 // ระดับถัง: ปากถังถึงก้น (cm). ยิ่งระยะที่วัดได้น้อย = ขยะยิ่งสูง = ยิ่งเต็ม
-const float BIN_DEPTH_CM = 30.0;   // ความลึกถัง (ปรับตามถังจริง)
+const float BIN_DEPTH_CM = 50.0;   // ความลึกถัง (ปรับตามถังจริง)
 const float FULL_CM      = 5.0;    // ระยะเหลือ <= ค่านี้ = ถือว่าเต็ม 100%
 
-const int TRIG_PINS[N_BIN] = { 13, 4,  2,  15 };
-const int ECHO_PINS[N_BIN] = { 34, 35, 36, 39 };
+const int TRIG_PINS[N_BIN] = { 5,  17, 4,  15 };
+const int ECHO_PINS[N_BIN] = { 18, 16, 2,  19 };
 
-// RGB LED — [bin][0=R,1=G,2=B]
+// LED 3 สีแยกดวง — [bin][0=R,1=Y,2=G]  (แดง/เหลือง/เขียว)
 const int LED_PINS[N_BIN][3] = {
-  { 25, 26, 27 },
-  { 14, 12, 33 },
-  { 32, 5,  18 },
-  { 19, 21, 22 },
+  { 23, 22, 21 },   // mod1
+  { 13, 12, 14 },   // mod2
+  { 27, 26, 25 },   // mod3
+  { 33, 3,  32 },   // mod4
 };
 
 const unsigned long READ_MS      = 500;    // อ่านถังทุก 0.5s
@@ -87,18 +87,19 @@ const char* colorFor(int pct) {
   return "green";
 }
 
-void ledWrite(int i, int r, int g, int b) {
-  int R = r, G = g, B = b;
-  if (LED_COMMON_ANODE) { R = !r; G = !g; B = !b; }
-  digitalWrite(LED_PINS[i][0], R);
-  digitalWrite(LED_PINS[i][1], G);
-  digitalWrite(LED_PINS[i][2], B);
+// เปิด/ปิดแต่ละสี (r,y,g = 1 ติด / 0 ดับ) — LED 3 ดวงแยกขา
+void ledSet(int i, bool r, bool y, bool g) {
+  int on  = LED_ACTIVE_HIGH ? HIGH : LOW;
+  int off = LED_ACTIVE_HIGH ? LOW  : HIGH;
+  digitalWrite(LED_PINS[i][0], r ? on : off);
+  digitalWrite(LED_PINS[i][1], y ? on : off);
+  digitalWrite(LED_PINS[i][2], g ? on : off);
 }
 
 void ledForColor(int i, const char* c) {
-  if      (!strcmp(c, "red"))    ledWrite(i, 1, 0, 0);
-  else if (!strcmp(c, "yellow")) ledWrite(i, 1, 1, 0);
-  else                           ledWrite(i, 0, 1, 0);   // green
+  if      (!strcmp(c, "red"))    ledSet(i, 1, 0, 0);
+  else if (!strcmp(c, "yellow")) ledSet(i, 0, 1, 0);
+  else                           ledSet(i, 0, 0, 1);   // green
 }
 
 void applyAutoLeds() {
@@ -135,8 +136,8 @@ void handleMessage(uint8_t* payload, size_t len) {
     ledAuto = false;
     for (JsonObject o : doc["leds"].as<JsonArray>()) {
       int i = o["i"] | -1;
-      if (i >= 0 && i < N_BIN)
-        ledWrite(i, o["r"] | 0, o["g"] | 0, o["b"] | 0);
+      const char* c = o["color"] | "green";   // "red" / "yellow" / "green"
+      if (i >= 0 && i < N_BIN) ledForColor(i, c);
     }
   }
 }
@@ -192,6 +193,13 @@ void loop() {
       binPct[i] = pctFromCm(binCm[i]);
     }
     if (ledAuto) applyAutoLeds();
+
+    // debug: ระยะ/เปอร์เซ็นต์/สี ของถังทั้ง 4 ทุกครั้งที่อ่าน
+    Serial.printf("[bins] 0:%.0fcm/%d%%/%s  1:%.0fcm/%d%%/%s  2:%.0fcm/%d%%/%s  3:%.0fcm/%d%%/%s\n",
+      binCm[0], binPct[0], colorFor(binPct[0]),
+      binCm[1], binPct[1], colorFor(binPct[1]),
+      binCm[2], binPct[2], colorFor(binPct[2]),
+      binCm[3], binPct[3], colorFor(binPct[3]));
   }
 
   if (now - lastBroadcast >= BROADCAST_MS) {
