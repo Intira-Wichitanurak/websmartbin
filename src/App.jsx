@@ -2,9 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ReadyPage  from './pages/ReadyPage.jsx'
 import CameraPage from './pages/CameraPage.jsx'
 import ResultPage from './pages/ResultPage.jsx'
-import { isMuted, setMuted, unlockAudio, sfx, stopSpeech } from './lib/sounds.js'
+import Modal from './components/Modal.jsx'
+import { isMuted, setMuted, unlockAudio, sfx, stopSpeech, playVoice } from './lib/sounds.js'
 import { useSensor } from './hooks/useSensor.js'
+import { useBinStatus } from './hooks/useBinStatus.js'
 import { getSensor } from './lib/sensor.js'
+import { getBinStatus, BIN_KEYS } from './lib/binStatus.js'
+import { WASTE_TYPES } from './lib/classifyWaste.js'
 import { relayCameraActive } from './lib/relay.js'
 
 const STAGE_W = 1024
@@ -66,12 +70,37 @@ export default function App() {
     }
   })
 
-  // Dev shortcuts for testing without hardware: D = detected, C = cleared
+  // Bin-fill status from the second (WiFi) ESP32. When a bin flips empty→full,
+  // pop a global notification — it overlays any page so it's visible even mid-
+  // flow. ResultPage independently blocks directing waste into a full bin.
+  const [fullBin, setFullBin] = useState(null)   // bin key currently shown, or null
+  useBinStatus((bin) => {
+    setFullBin(bin)
+    sfx.alert()
+    const info = WASTE_TYPES[bin] ?? WASTE_TYPES.general
+    playVoice(`bin_full_${bin}`,
+      `ถัง${info.label}เต็มแล้วน้า กรุณาใช้ถังอื่น หรือแจ้งเจ้าหน้าที่มาเทถังก่อนน้า`)
+  })
+
+  // Auto-dismiss the notification after a few seconds.
+  useEffect(() => {
+    if (!fullBin) return
+    const t = setTimeout(() => setFullBin(null), 6000)
+    return () => clearTimeout(t)
+  }, [fullBin])
+
+  // Dev shortcuts for testing without hardware: D = detected, C = cleared,
+  // 1..4 = toggle bin-full for wet/recyclable/hazardous/general.
   useEffect(() => {
     function onKey(e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
       if (e.key === 'd' || e.key === 'D') getSensor().dispatch('detected')
       if (e.key === 'c' || e.key === 'C') getSensor().dispatch('cleared')
+      const binIdx = '1234'.indexOf(e.key)
+      if (binIdx !== -1) {
+        const bin = BIN_KEYS[binIdx]
+        getBinStatus().setFull(bin, !getBinStatus().isFull(bin))
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -102,7 +131,26 @@ export default function App() {
       <footer className="text-center text-[11px] text-sky-700/80 py-1.5 relative z-10 shrink-0">
         ทำด้วย 💖 โดยน้องคาปิ
       </footer>
+
+      {/* Global "bin full" notification — fires the moment a bin flips to full,
+          on any page. Auto-dismisses after a few seconds. */}
+      <BinFullPopup bin={fullBin} />
     </main>
+  )
+}
+
+/* -------------------- bin-full notification -------------------- */
+function BinFullPopup({ bin }) {
+  const info = bin ? (WASTE_TYPES[bin] ?? WASTE_TYPES.general) : null
+  return (
+    <Modal
+      open={!!bin}
+      tone="danger"
+      mood="sad"
+      mascotSrc="/mascos5.png"
+      title={info ? `ถัง${info.label}เต็มแล้วน้า ${info.emoji}` : ''}
+      message="ถังนี้เต็มแล้ว ใส่เพิ่มไม่ได้น้า — กรุณาใช้ถังอื่น หรือแจ้งเจ้าหน้าที่มาเทถังก่อนน้า 🗑️"
+    />
   )
 }
 

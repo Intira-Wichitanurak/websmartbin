@@ -4,6 +4,7 @@ import Modal from '../components/Modal.jsx'
 import { WASTE_TYPES } from '../lib/classifyWaste.js'
 import { sfx, playVoice, stopSpeech } from '../lib/sounds.js'
 import { relayForType, relayAllOff } from '../lib/relay.js'
+import { getBinStatus } from '../lib/binStatus.js'
 
 export default function ResultPage({ result, onHome, onFlowDone }) {
   const [popup, setPopup]       = useState(null)
@@ -44,15 +45,37 @@ export default function ResultPage({ result, onHome, onFlowDone }) {
         return
       }
 
-      // 1) success ding + announce verdict + light up the matching relay
-      setPopup(null); sfx.success()
-      relayForType(result.type)
+      // Is the bin this waste belongs to already full? (reported live by the
+      // WiFi bin-sensor ESP32). Read it fresh each time — it can flip mid-flow.
+      const isBinFull = () => getBinStatus().isFull(result.type)
       const info = WASTE_TYPES[result.type] ?? WASTE_TYPES.general
+
+      // 1) success ding + announce verdict + light up the matching relay.
+      //    Skip the relay when the bin is full — never point at a full bin.
+      setPopup(null); sfx.success()
+      if (!isBinFull()) relayForType(result.type)
       await sleep(700); if (stop()) return
       await playVoice(`result_${result.type}`,
         'น้องคาปิคิดว่าขยะนี้คือ ' + info.label + ' น้า~',
         { chirpAfter: true })
       if (stop()) return
+
+      // 1.5) Bin-full guard — the user now knows the waste type, so only here
+      //      do we tell them the bin can't take it. Skip the thank-you and
+      //      head home instead.
+      if (isBinFull()) {
+        relayAllOff()                                // stop pointing at that bin
+        await sleep(600); if (stop()) return
+        setPopup('binfull'); sfx.alert()
+        await sleep(500); if (stop()) return
+        await playVoice(`bin_full_${result.type}`,
+          `แต่ว่าถัง${info.label}เต็มแล้วน้า ยังใส่ไม่ได้ กรุณาแจ้งเจ้าหน้าที่มาเทถังก่อนน้า`)
+        if (stop()) return
+        onFlowDone?.()                               // speech done → cleared can goHome
+        await sleep(3000); if (stop()) return
+        onHome()
+        return
+      }
 
       // 2) breathing room before thank-you
       await sleep(900); if (stop()) return
@@ -195,6 +218,15 @@ export default function ResultPage({ result, onHome, onFlowDone }) {
         mascotSrc="/mascos4.png"
         title="มีเศษอาหารติดอยู่น้า"
         message="กรุณาเขี่ยเศษอาหารทิ้งก่อน แล้วนำมาคัดแยกใหม่อีกครั้งน้า 🍃"
+      />
+
+      <Modal
+        open={popup === 'binfull'}
+        tone="danger"
+        mood="sad"
+        mascotSrc="/mascos5.png"
+        title={`ถัง${info.label}เต็มแล้วน้า ${info.emoji}`}
+        message="ถังนี้เต็มแล้ว ใส่เพิ่มไม่ได้น้า — กรุณาแจ้งเจ้าหน้าที่มาเทถังก่อน แล้วค่อยนำมาทิ้งใหม่น้า 🗑️"
       />
 
       <Modal
