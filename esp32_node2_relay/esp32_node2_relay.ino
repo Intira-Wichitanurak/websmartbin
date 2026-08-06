@@ -31,9 +31,10 @@
 const bool RELAY_ACTIVE_LOW = true;
 const unsigned long CLASSIFY_ON_MS = 20000;   // ไฟประเภทขยะติดค้าง 20s แล้วดับเอง
 
-// ลำดับ: wet, recyclable, hazardous, general
-const char* RELAY_NAMES[] = { "wet", "recyclable", "hazardous", "general" };
-const int   RELAY_PINS[]  = {  25,    26,           27,          14 };
+// พินคงเดิม {25,26,27,14} — สลับแค่ "ชื่อประเภท" ให้ตรงสีไฟจริงบนแต่ละพิน
+//   พิน 25=เขียว→wet  26=แดง→hazardous  27=น้ำเงิน→general  14=เหลือง→recyclable
+const char* RELAY_NAMES[] = { "wet", "hazardous", "general", "recyclable" };
+const int   RELAY_PINS[]  = {  25,    26,          27,        14 };
 const int   N_RELAY = 4;
 
 WebSocketsClient ws;

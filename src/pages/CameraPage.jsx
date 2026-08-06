@@ -26,10 +26,13 @@ const FOOD_THRESHOLD_GRAMS = {
  * a real object detector is wired in.
  */
 const MOVEMENT_THRESHOLD = 6     // avg per-channel pixel diff that counts as motion
-const STABLE_DURATION    = 1500  // ms of stillness AFTER motion → trigger capture
 const POLL_INTERVAL      = 250   // ms between motion samples
 const SAMPLE_SIZE        = 64    // px — downsample frame for cheap diffs
 const WARMUP_MS          = 800   // give the video a moment before sampling
+
+// จับภาพด้วยเซนเซอร์: ให้คนวางของแล้ว "เอามือออก" (ultrasonic กลับมา >45cm →
+// node #1 ส่ง cleared) ค่อยถ่าย — กันมือติดในเฟรม
+const CAPTURE_DELAY_MS = 3000    // หน่วงหลังเอามือออก (cleared) ก่อนถ่าย — นับถอยหลังบนจอ
 
 export default function CameraPage({ onResult }) {
   const videoRef    = useRef(null)
@@ -39,9 +42,14 @@ export default function CameraPage({ onResult }) {
   const lastFrame   = useRef(null)
   const lastMotion  = useRef(0)
   const hasMovedRef = useRef(false)
+  const capturedRef = useRef(false)   // กันถ่ายซ้ำ (ยิงครั้งเดียวต่อการเข้าหน้ากล้อง)
+  const captureTimersRef = useRef([]) // timer ของการนับถอยหลัง (เก็บไว้ยกเลิกได้)
 
   // phase: init | denied | unsupported | watching | scanning | capturing | processing
   const [phase, setPhase] = useState('init')
+  const [countdown, setCountdown] = useState(0)   // วินาทีที่เหลือก่อนถ่าย (0 = ไม่นับ)
+  const phaseRef = useRef(phase)
+  phaseRef.current = phase
 
   const CAMERA_ZOOM = 1.5
 
@@ -122,10 +130,9 @@ export default function CameraPage({ onResult }) {
             if (p !== 'scanning') sfx.click()   // chirp when first detected
             return 'scanning'
           })
-        } else if (hasMovedRef.current && Date.now() - lastMotion.current > STABLE_DURATION) {
-          clearInterval(pollId)
-          autoCapture()
         }
+        // การถ่ายไม่ได้ทริกจาก "ภาพนิ่ง" อีกต่อไป — รอสัญญาณ cleared จากเซนเซอร์
+        // (คนวางของแล้วเอามือออก) ดู sensor-driven capture effect ด้านล่าง
       }
       lastFrame.current = new Uint8ClampedArray(cur)
     }
@@ -133,6 +140,42 @@ export default function CameraPage({ onResult }) {
     const warm = setTimeout(() => { pollId = setInterval(tick, POLL_INTERVAL) }, WARMUP_MS)
     return () => { clearTimeout(warm); clearInterval(pollId) }
   }, [phase])
+
+  /* ---------------- sensor-driven capture (หน่วง 5 วิ) ----------------
+     flow: มือเข้ามา (detected → เปิดไฟกล้อง + เข้าหน้านี้ ที่ App.jsx) → วางของ →
+     เอามือออก (ultrasonic กลับมา >45cm → node #1 ส่ง "cleared") → นับถอยหลัง
+     CAPTURE_DELAY_MS → ค่อยถ่าย (กันมือติดในเฟรม). ถ้ามือกลับเข้ามา (detected)
+     ระหว่างนับ → ยกเลิก  */
+  function cancelCountdown() {
+    captureTimersRef.current.forEach(clearTimeout)
+    captureTimersRef.current = []
+    setCountdown(0)
+  }
+
+  useEffect(() => {
+    const sensor = getSensor()
+    const off = sensor.on((event) => {
+      if (capturedRef.current) return
+      // มือกลับเข้ามาระหว่างนับถอยหลัง → ยกเลิก
+      if (event === 'detected') { if (captureTimersRef.current.length) cancelCountdown(); return }
+      if (event !== 'cleared') return
+      // ถ่ายได้เฉพาะตอนกล้องพร้อม (watching/scanning) เท่านั้น
+      if (phaseRef.current !== 'watching' && phaseRef.current !== 'scanning') return
+      if (captureTimersRef.current.length) return   // กำลังนับอยู่แล้ว
+      // เริ่มนับถอยหลัง แล้วค่อยถ่าย
+      const secs = Math.round(CAPTURE_DELAY_MS / 1000)
+      setCountdown(secs)
+      for (let i = 1; i < secs; i++) {
+        captureTimersRef.current.push(setTimeout(() => { setCountdown(secs - i); sfx.click() }, i * 1000))
+      }
+      captureTimersRef.current.push(setTimeout(() => {
+        captureTimersRef.current = []
+        setCountdown(0)
+        if (!capturedRef.current) { capturedRef.current = true; autoCapture() }
+      }, CAPTURE_DELAY_MS))
+    })
+    return () => { off(); cancelCountdown() }
+  }, [])
 
   /* ---------------- capture + classify ---------------- */
   async function autoCapture() {
@@ -183,7 +226,7 @@ export default function CameraPage({ onResult }) {
   */
   const rightCopy = {
     init:        { mood: 'happy',  text: 'กำลังเปิดกล้องน้า...',  speech: '' },
-    watching:    { mood: 'happy',  text: 'วางขยะตรงหน้าคาปิเลยน้า~', speech: 'วางขยะตรงหน้าน้องคาปิ จะช่วยแยกประเภทให้น้า' },
+    watching:    { mood: 'happy',  text: 'วางขยะแล้วเอามือออกน้า~', speech: 'วางขยะตรงหน้าน้องคาปิ แล้วเอามือออก เดี๋ยวถ่ายให้น้า' },
     scanning:    { mood: 'happy',  text: 'เห็นแล้ว ถือนิ่ง ๆ น้า!',  speech: '' },
     capturing:   { mood: 'starry', text: 'ถ่ายภาพแล้ว!',           speech: '' },
     processing:  { mood: 'starry', text: 'น้องคาปิกำลังคิด...',     speech: 'น้องคาปิกำลังคิดอยู่นะ รอแป๊บนึงน้า' },
@@ -273,6 +316,16 @@ export default function CameraPage({ onResult }) {
               <div className="absolute inset-0 bg-white animate-pop pointer-events-none" />
             )}
 
+            {/* countdown ก่อนถ่าย (หลังเอามือออก) */}
+            {countdown > 0 && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/25 pointer-events-none">
+                <div key={countdown} className="text-white text-[7rem] leading-none font-extrabold drop-shadow-[0_4px_12px_rgba(0,0,0,0.5)] animate-pop">
+                  {countdown}
+                </div>
+                <div className="bubble text-xs mt-3 whitespace-nowrap">เอามือออกแล้ว! ถ่ายในอีก {countdown} วิ 📸</div>
+              </div>
+            )}
+
             {/* placeholder for camera errors */}
             {(phase === 'denied' || phase === 'unsupported' || phase === 'init') && (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-4 gap-2">
@@ -313,7 +366,7 @@ export default function CameraPage({ onResult }) {
             </div>
 
             <p className="text-center text-[11px] text-sky-600/80 font-semibold leading-snug">
-              ระบบจะถ่ายเองเมื่อขยะนิ่งน้า 💡
+              วางขยะแล้วเอามือออก น้องคาปิถ่ายให้เองน้า 💡
             </p>
           </div>
         </div>
