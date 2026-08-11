@@ -14,6 +14,11 @@ import { relayCameraActive } from './lib/relay.js'
 const STAGE_W = 1024
 const STAGE_H = 600
 
+// เชื่อมข้อมูลระดับถังจาก node #3 (มาทาง hub เป็น event 'levels') เข้าฟีเจอร์ถังของเว็บ
+// node #3 ระบุถังด้วย index — แมปเป็นชนิดขยะตามการติดตั้งจริง:
+const BIN_INDEX_TO_TYPE = ['wet', 'hazardous', 'general', 'recyclable']  // ถัง 0,1,2,3
+const BIN_FULL_PCT      = 80    // pct ≥ ค่านี้ = ถังเต็ม (ตรงกับ LED แดงของ node #3)
+
 export default function App() {
   const [page, setPage]     = useState('ready')
   const [result, setResult] = useState(null)
@@ -69,6 +74,22 @@ export default function App() {
       if (pageRef.current === 'result' && resultDoneRef.current) goHome()
     }
   })
+
+  // Bridge node #3 bin levels → the bin-status feature. node #3 broadcasts
+  // {node:"bins",event:"levels",bins:[{i,pct,...}]} through the hub, surfaced by
+  // getSensor() as a 'levels' event. Map each bin index→type and mark it full at
+  // BIN_FULL_PCT. getBinStatus().setFull only emits on change, so this is cheap.
+  useEffect(() => {
+    const off = getSensor().on((event, data) => {
+      if (event !== 'levels' || !Array.isArray(data?.bins)) return
+      const bins = getBinStatus()
+      for (const b of data.bins) {
+        const type = BIN_INDEX_TO_TYPE[b.i]
+        if (type) bins.setFull(type, (b.pct ?? 0) >= BIN_FULL_PCT)
+      }
+    })
+    return off
+  }, [])
 
   // Bin-fill status from the second (WiFi) ESP32. When a bin flips empty→full,
   // pop a global notification — it overlays any page so it's visible even mid-

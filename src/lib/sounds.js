@@ -235,33 +235,26 @@ export function listVoices() {
 }
 
 /* --------------------------------------------------------------------------
- *  playVoice(clipName, fallbackText)
+ *  playVoice(clipName, fallbackText, opts)
  *
- *  Tries to play a pre-recorded mp3 from /public/voice/<clipName>.mp3.
- *  If the file isn't there (404 / load error), falls back to TTS speak().
+ *  เล่นไฟล์เสียงอัดจริงจาก /public/voice/<clipName>.mp3
+ *  ถ้าไฟล์ไม่มี (404/โหลดไม่ได้) → fallback ไปใช้ TTS speak(fallbackText)
  *
- *  Why: real character voice acting always beats browser TTS for kid apps.
- *  Generate the clips yourself (record on phone) or with a service like
- *  ElevenLabs / VoiceMaker / Murf.ai with a cute character voice, then drop
- *  them into public/voice/ — no code changes needed.
+ *  วิธีเพิ่มเสียง: อัด/สร้างไฟล์ mp3 ตามชื่อ clip แล้ววางใน public/voice/
+ *  (ดูรายชื่อ clip ที่ต้องมีด้านล่าง) — ไม่ต้องแก้โค้ด
  *
- *  Required clips (the app will gracefully fall back to TTS for any missing):
- *    welcome.mp3
- *    watching.mp3   scanning.mp3   processing.mp3
- *    denied.mp3     unsupported.mp3
- *    result_general.mp3   result_recyclable.mp3
- *    result_hazardous.mp3 result_wet.mp3
- *    popup_blurry.mp3     popup_food.mp3
- *    thankyou.mp3
+ *  รายชื่อ clip (ไฟล์ไหนไม่มี แอปจะ fallback เป็น TTS ให้เอง):
+ *    welcome
+ *    watching   processing   denied   unsupported
+ *    result_wet   result_recyclable   result_hazardous   result_general
+ *    popup_blurry   popup_food   thankyou
+ *    bin_full_wet   bin_full_recyclable   bin_full_hazardous   bin_full_general
  * -------------------------------------------------------------------------- */
 
-const clipCache = new Map()  // clipName → Audio element (preloaded)
-
 export function preloadVoice(clipName) {
-  if (clipCache.has(clipName)) return
+  if (!clipName) return
   const a = new Audio(`/voice/${clipName}.mp3`)
   a.preload = 'auto'
-  clipCache.set(clipName, a)
 }
 
 let currentClip = null
@@ -269,7 +262,7 @@ let currentClip = null
 export function playVoice(clipName, fallbackText, opts = {}) {
   if (muted) return Promise.resolve()
 
-  // stop any previous clip / TTS
+  // หยุด clip / TTS ก่อนหน้า
   if (currentClip) { try { currentClip.pause(); currentClip.currentTime = 0 } catch {} }
   if (SS) SS.cancel()
 
@@ -287,6 +280,6 @@ export function playVoice(clipName, fallbackText, opts = {}) {
     audio.onended = () => { currentClip = null; resolve() }
     audio.onerror = fallback
 
-    audio.play().catch(fallback)   // covers 404 / autoplay-blocked
+    audio.play().catch(fallback)   // ครอบคลุม 404 / autoplay ถูกบล็อก
   })
 }

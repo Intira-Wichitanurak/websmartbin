@@ -20,12 +20,14 @@ export const WASTE_TYPES = {
   },
   recyclable: {
     key: 'recyclable',
-    label: 'ขยะรีไซเคิล',
-    emoji: '♻️',
+    // หมายเหตุ: สลับ "ข้อความ" ทั่วไป↔รีไซเคิลบนหน้าผลลัพธ์ (label/emoji/tip)
+    // ตามที่พบว่าแสดงสลับกัน — ไม่แตะ type/สีไฟ node #2
+    label: 'ขยะทั่วไป',
+    emoji: '🗑️',
     color: 'from-sky-300 to-sky-500',
     ring:  'ring-sky-300',
     text:  'text-sky-800',
-    tip:   'เช่น ขวดน้ำ กระดาษ กระป๋อง — ล้างให้สะอาดก่อนทิ้งในถังสีเหลือง'
+    tip:   'เช่น ถุงพลาสติก ซองขนม โฟม — ทิ้งในถังสีน้ำเงิน'
   },
   hazardous: {
     key: 'hazardous',
@@ -38,12 +40,12 @@ export const WASTE_TYPES = {
   },
   general: {
     key: 'general',
-    label: 'ขยะทั่วไป',
-    emoji: '🗑️',
+    label: 'ขยะรีไซเคิล',
+    emoji: '♻️',
     color: 'from-amber-300 to-amber-500',
     ring:  'ring-amber-300',
     text:  'text-amber-800',
-    tip:   'เช่น ถุงพลาสติก ซองขนม โฟม — ทิ้งในถังสีน้ำเงิน'
+    tip:   'เช่น ขวดน้ำ กระดาษ กระป๋อง — ล้างให้สะอาดก่อนทิ้งในถังสีเหลือง'
   }
 }
 
