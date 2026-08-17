@@ -71,9 +71,23 @@ const unsigned long IR_READ_INTERVAL     = 100;
 const unsigned long WEIGHT_READ_INTERVAL = 300;
 const unsigned long WEIGHT_BROADCAST_MS  = 500;
 
+// ---------- ความเป็นเจ้าของไฟกล้อง ----------
+// IDLE  ไฟดับ พร้อมจุด — เห็นของรอบแรกเมื่อไหร่จุดทันที
+// ARMED ESP จุดไฟแล้วแต่ยังไม่ครบ STABLE_READS — ยังเป็นของ ESP จึงมีสิทธิ์สั่งดับ
+// WEB   ครบ STABLE_READS (detected) แล้ว — ส่งมอบให้เว็บ ESP ห้ามแตะไฟเด็ดขาด
+//       จนกว่าเว็บจะปิดกล้องแล้วส่ง all_off กลับมา
+//
+// ที่ต้องมีสถานะ WEB เพราะหลัง cleared เว็บยังนับถอยหลังอีก 3 วิก่อนถ่าย ถ้า ESP
+// ยังถือสิทธิ์อยู่ ค่าอ่านหลอนช่วงนั้นจะทำให้มันดับไฟใส่ตอนชัตเตอร์กำลังจะลั่น
+enum LightOwner { LIGHT_IDLE, LIGHT_ARMED, LIGHT_WEB };
+const unsigned long WEB_HOLD_MAX_MS = 40000;   // กัน WEB ค้างถ้า all_off ไม่มา
+
+LightOwner lightOwner = LIGHT_IDLE;
+int   absentReads   = 0;       // นับรอบที่ของหายไปตอนยัง ARMED → ครบ 5 แล้วดับ
+unsigned long webSince = 0;
+
 bool  currentState  = false;
 int   sameReads     = 0;
-bool  lightHintSent = false;   // ยิงไฟกล้องไปแล้วรอบนี้? (รีเซ็ตตอน cleared)
 float currentWeight = 0.0;
 unsigned long lastRead = 0, lastWeightRead = 0, lastWeightSend = 0, lastDbg = 0;
 
@@ -109,12 +123,10 @@ void sendEvent(const char* event) {
 // ไฟกล้อง — ส่งแยกจาก sendEvent() เพราะใช้ node="camera" ให้ hub บน Pi ยิง GPIO
 // ต่อได้ทันที (เว็บกรอง node นี้ทิ้ง — ดู src/lib/sensor.js)
 //
-// จุดอย่างเดียว ไม่ดับ: ESP เห็นแค่ระยะจากเซ็นเซอร์ ไม่รู้ว่าเว็บถ่ายเสร็จหรือยัง
-// ถ้าให้มันสั่งดับด้วย มันจะไปดับตอนเว็บกำลังนับถอยหลังก่อนถ่าย (ค่าอ่านหลอน
-// หลัง cleared ทำให้เข้าใจผิดว่าเป็นรอบใหม่) — อายุไฟเป็นหน้าที่ของ Pi
-// ดู CAMERA_AUTO_OFF_S ใน model_server.py
-void sendCameraLight() {
-  const char* msg = "{\"node\":\"camera\",\"event\":\"on\"}";
+// สั่งดับได้เฉพาะตอนยังเป็น LIGHT_ARMED เท่านั้น (ดู lightOwner)
+void sendCameraLight(bool on) {
+  const char* msg = on ? "{\"node\":\"camera\",\"event\":\"on\"}"
+                       : "{\"node\":\"camera\",\"event\":\"off\"}";
   ws.sendTXT(msg);
   Serial.print("-> "); Serial.println(msg);
 }
@@ -122,6 +134,16 @@ void sendCameraLight() {
 void onWsEvent(WStype_t type, uint8_t* payload, size_t len) {
   if (type == WStype_CONNECTED)      { wsConnected = true;  Serial.println("[ws] connected"); }
   else if (type == WStype_DISCONNECTED) { wsConnected = false; Serial.println("[ws] disconnected"); }
+  else if (type == WStype_TEXT && lightOwner == LIGHT_WEB && len < 256) {
+    // เว็บส่ง {"node":"relay","event":"all_off"} ตอนออกจากหน้าผลลัพธ์ = ปิดกล้องแล้ว
+    // (ดู relayAllOff ใน src/lib/relay.js) — จบรอบ รับไฟกลับมาเป็นของ ESP
+    char buf[256];
+    memcpy(buf, payload, len); buf[len] = '\0';
+    if (strstr(buf, "all_off")) {
+      lightOwner = LIGHT_IDLE;
+      Serial.println("[light] all_off จากเว็บ — จบรอบ กลับสู่ IDLE");
+    }
+  }
 }
 
 void setup() {
@@ -188,12 +210,23 @@ void loop() {
                     cm1, cm2, currentWeight, present ? "PRESENT" : "empty");
     }
 
-    // ไฟกล้อง: ยิงตั้งแต่รอบแรกที่เห็นมือ ไม่รอ STABLE_READS
-    // ไฟติดพลาดสักครั้งไม่เสียหาย แต่ถ่ายผิดจังหวะเสียหายกว่า — เกณฑ์สองอย่างนี้
-    // จึงแยกกัน: detected/cleared ยังกันเด้งด้วย STABLE_READS เท่าเดิม
-    if (present && !currentState && !lightHintSent) {
-      lightHintSent = true;
-      sendCameraLight();
+    // ไฟกล้อง — เดินตาม lightOwner (ดูคำอธิบายสถานะด้านบน)
+    if (lightOwner == LIGHT_IDLE) {
+      if (present) {                                  // สัญญาณแรกที่เห็นของ → จุดเลย
+        lightOwner  = LIGHT_ARMED;
+        absentReads = 0;
+        sendCameraLight(true);
+      }
+    } else if (lightOwner == LIGHT_ARMED) {
+      if (present) {
+        absentReads = 0;
+      } else if (++absentReads >= STABLE_READS) {     // ไม่ครบ 5 รอบ → ของปลอม ดับทิ้ง
+        lightOwner = LIGHT_IDLE;
+        sendCameraLight(false);
+      }
+    } else if (now - webSince >= WEB_HOLD_MAX_MS) {   // LIGHT_WEB ค้างนานผิดปกติ
+      lightOwner = LIGHT_IDLE;                        // (เว็บปิด/ค้าง ไม่ส่ง all_off)
+      Serial.println("[light] WEB ค้างเกินกำหนด — ปลดเองกันตาย");
     }
 
     if (present == currentState) {
@@ -201,7 +234,10 @@ void loop() {
     } else if (++sameReads >= STABLE_READS) {
       currentState = present;
       sameReads = 0;
-      if (!currentState) lightHintSent = false;   // ว่างแล้ว → พร้อมยิงไฟรอบถัดไป
+      if (currentState && lightOwner == LIGHT_ARMED) {  // ครบ 5 รอบ → ส่งมอบให้เว็บ
+        lightOwner = LIGHT_WEB;
+        webSince   = now;
+      }
       sendEvent(currentState ? "detected" : "cleared");
     }
   }
