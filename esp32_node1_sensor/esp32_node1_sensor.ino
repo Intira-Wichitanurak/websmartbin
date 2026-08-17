@@ -15,11 +15,9 @@ Capybara Waste Sorter — ESP32 NODE #1: presence + weight  (WiFi / WebSocket)
 {"node":"camera","event":"on"}                        // เห็นมือรอบแรก → ไฟกล้องติดเลย
                                                       // (ไม่รอ STABLE_READS; hub บน Pi
                                                       //  ยิง /camera ให้ ไม่ผ่านเบราว์เซอร์)
-{"node":"camera","event":"off"}                       // มือหายก่อนครบ STABLE_READS
-                                                      // (โบกผ่าน) → ไม่มี detected ตามมา
-                                                      // เลยต้องดับไฟเอง กันไฟค้าง
-                                                      // ถ้า detected เกิดแล้ว การดับไฟ
-                                                      // เป็นของเว็บ (relayAllOff)
+                                                      // node นี้ส่งแต่ "เปิด" การดับเป็น
+                                                      // หน้าที่ของ Pi (CAMERA_AUTO_OFF_S)
+                                                      // และเว็บ (relayAllOff)
 
 Library ที่ต้องติดตั้ง (Library Manager):
 - HX711 by Bogdan Necula
@@ -76,7 +74,6 @@ const unsigned long WEIGHT_BROADCAST_MS  = 500;
 bool  currentState  = false;
 int   sameReads     = 0;
 bool  lightHintSent = false;   // ยิงไฟกล้องไปแล้วรอบนี้? (รีเซ็ตตอน cleared)
-int   abortReads    = 0;      // นับรอบที่มือหายทั้งที่ยังไม่ทัน detected → สั่งดับไฟ
 float currentWeight = 0.0;
 unsigned long lastRead = 0, lastWeightRead = 0, lastWeightSend = 0, lastDbg = 0;
 
@@ -111,9 +108,13 @@ void sendEvent(const char* event) {
 
 // ไฟกล้อง — ส่งแยกจาก sendEvent() เพราะใช้ node="camera" ให้ hub บน Pi ยิง GPIO
 // ต่อได้ทันที (เว็บกรอง node นี้ทิ้ง — ดู src/lib/sensor.js)
-void sendCameraLight(bool on) {
-  const char* msg = on ? "{\"node\":\"camera\",\"event\":\"on\"}"
-                       : "{\"node\":\"camera\",\"event\":\"off\"}";
+//
+// จุดอย่างเดียว ไม่ดับ: ESP เห็นแค่ระยะจากเซ็นเซอร์ ไม่รู้ว่าเว็บถ่ายเสร็จหรือยัง
+// ถ้าให้มันสั่งดับด้วย มันจะไปดับตอนเว็บกำลังนับถอยหลังก่อนถ่าย (ค่าอ่านหลอน
+// หลัง cleared ทำให้เข้าใจผิดว่าเป็นรอบใหม่) — อายุไฟเป็นหน้าที่ของ Pi
+// ดู CAMERA_AUTO_OFF_S ใน model_server.py
+void sendCameraLight() {
+  const char* msg = "{\"node\":\"camera\",\"event\":\"on\"}";
   ws.sendTXT(msg);
   Serial.print("-> "); Serial.println(msg);
 }
@@ -192,21 +193,7 @@ void loop() {
     // จึงแยกกัน: detected/cleared ยังกันเด้งด้วย STABLE_READS เท่าเดิม
     if (present && !currentState && !lightHintSent) {
       lightHintSent = true;
-      abortReads    = 0;
-      sendCameraLight(true);
-    }
-
-    // จุดไฟไปแล้วแต่มือหายก่อนครบ STABLE_READS → detected ไม่เคยเกิด แปลว่าเว็บ
-    // ไม่เคยเริ่มขั้นตอนถ่าย จึงไม่มีใครไปถึงหน้าผลลัพธ์เพื่อสั่งดับไฟให้
-    // (relayAllOff อยู่ที่นั่นที่เดียว) — คนจุดต้องดับเอง
-    if (lightHintSent && !currentState) {
-      if (present) {
-        abortReads = 0;
-      } else if (++abortReads >= STABLE_READS) {
-        lightHintSent = false;
-        abortReads    = 0;
-        sendCameraLight(false);
-      }
+      sendCameraLight();
     }
 
     if (present == currentState) {
