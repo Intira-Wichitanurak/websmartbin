@@ -17,7 +17,9 @@ Capybara Waste Sorter — PyTorch inference server (EfficientNetV2-S + head)
 preprocess: resize + normalize ตามที่ checkpoint ระบุ (fallback = ImageNet)
 + ความมั่นใจต่ำกว่า CONF_THRESHOLD → ตีเป็น general ไว้ก่อน (เปิดอยู่: ค่าเริ่มต้น 0.40)
 
-รัน: python model_server.py   (ต้องมี torch/torchvision/flask/pillow)
+รัน: python model_server.py
+ต้องมี: flask, pillow, numpy + backend ตามชนิดไฟล์โมเดล
+        .keras/.h5 → tensorflow (keras 3) | .onnx → onnxruntime | .pt/.pth → torch+torchvision
 ค่าเริ่มต้น: http://0.0.0.0:8000/classify  (POST {"image":"data:image/jpeg;base64,..."})
 ตั้ง host/port/threshold ผ่าน env: MODEL_HOST, MODEL_PORT, CONF_THRESHOLD
 ความสว่างกล้องตอนถ่าย: CAMERA_BRIGHTNESS (ค่าเริ่มต้น -64), CAMERA_GAMMA, CAMERA_V4L2_DEV
@@ -30,12 +32,20 @@ import base64
 import threading
 import subprocess
 
-import torch
-import torch.nn as nn
-import torchvision.models as M
-import torchvision.transforms as T
 from PIL import Image
 from flask import Flask, request, jsonify
+
+# torch มีเฉพาะตอนใช้โมเดล .pt/.pth — เครื่องที่รันโมเดล .keras อย่างเดียวไม่ต้องลง
+# (torch+torchvision กินพื้นที่ ~1.5GB ซึ่งเยอะเกินไปสำหรับ Pi ที่ไม่ได้ใช้)
+try:
+    import torch
+    import torch.nn as nn
+    import torchvision.models as M
+    import torchvision.transforms as T
+    _TORCH_OK = True
+except ImportError:
+    torch = nn = M = T = None
+    _TORCH_OK = False
 
 HERE        = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH  = os.path.join(HERE, 'public', 'bes4t.keras')
@@ -47,7 +57,7 @@ IMG_SIZE    = 224
 # 0.40 = เกณฑ์ที่ใช้งานจริง / ตั้ง 0 เพื่อปิดฟังก์ชัน (โชว์คลาสที่ทายจริงเสมอ ตอนวัดความแม่นโมเดล)
 CONF_THRESHOLD = float(os.environ.get('CONF_THRESHOLD', '0.40'))
 
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu') if _TORCH_OK else 'cpu'
 
 # คลาสย่อย -> ชนิดขยะของแอป
 CLASS_TO_APP_TYPE = {
@@ -196,20 +206,22 @@ camera_tune(verbose=True)
 
 
 # ---------------- model (EfficientNetV2-S backbone + custom head) ----------------
-class WasteModel(nn.Module):
-    def __init__(self, n_classes):
-        super().__init__()
-        self.backbone = M.efficientnet_v2_s(weights=None)   # ใช้เฉพาะ .features + .avgpool
-        self.head = nn.Sequential(
-            nn.Dropout(0.3),              # head.0 (ไม่มี params)
-            nn.Linear(1280, n_classes),   # head.1
-        )
+# ประกาศได้ต่อเมื่อมี torch (สืบทอด nn.Module) — ดูหมายเหตุที่ import ด้านบน
+if _TORCH_OK:
+    class WasteModel(nn.Module):
+        def __init__(self, n_classes):
+            super().__init__()
+            self.backbone = M.efficientnet_v2_s(weights=None)   # ใช้เฉพาะ .features + .avgpool
+            self.head = nn.Sequential(
+                nn.Dropout(0.3),              # head.0 (ไม่มี params)
+                nn.Linear(1280, n_classes),   # head.1
+            )
 
-    def forward(self, x):
-        x = self.backbone.features(x)
-        x = self.backbone.avgpool(x)
-        x = torch.flatten(x, 1)
-        return self.head(x)
+        def forward(self, x):
+            x = self.backbone.features(x)
+            x = self.backbone.avgpool(x)
+            x = torch.flatten(x, 1)
+            return self.head(x)
 
 
 def _extract_state(obj):
@@ -339,6 +351,10 @@ def _load_torch():
     (~0.63/0.25) ไม่ใช่ ImageNet (~0.49/0.23) ถ้าใช้ผิดภาพจะเพี้ยนไปราวครึ่ง SD
     จึงอ่านจาก checkpoint มาก่อนเสมอ แล้วค่อย fallback เป็น ImageNet
     """
+    if not _TORCH_OK:
+        raise SystemExit(f'[model] {MODEL_PATH} ต้องใช้ torch — ลงด้วย\n'
+                         f'  pip install torch torchvision --break-system-packages')
+
     obj = torch.load(MODEL_PATH, map_location='cpu', weights_only=False)
     state, meta = _extract_state(obj)
 

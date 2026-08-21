@@ -8,18 +8,22 @@
 #     sudo reboot
 #
 # What it does (in order):
-#   1. apt installs runtime deps (node, chromium, ffmpeg, lgpio, fonts)
+#   1. apt installs runtime deps (node, firefox, ffmpeg, v4l-utils, lgpio, fonts)
 #   2. npm install
-#   3. pip install torch + torchvision on a disk-backed TMPDIR
+#   3. pip install the model backend on a disk-backed TMPDIR
+#        default            tensorflow  (for the .keras model in public/)
+#        WITH_TORCH=1       + torch + torchvision  (only for .pt/.pth models)
+#        WITH_ONNX=1        + onnxruntime          (only for .onnx models)
 #   4. patches /boot/firmware/config.txt for I2S audio + UART
-#   5. writes the Chromium camera/mic policy (system-wide, mandatory)
+#   5. writes the Firefox camera/autoplay policy (system-wide, mandatory)
 #   6. wires up the labwc autostart -> scripts/kiosk-start.sh
 #
 # What it does NOT do — you still need to:
 #   - drop the trained model into public/ and point MODEL_PATH in model_server.py at it
 #   - drop voice clips into public/voice/*.mp3
-#   - flash + calibrate the ESP32 firmware (esp32_sensor_sharp_ir/)
-#   - wire the hardware (see esp32_sensor_sharp_ir.ino header for pinout)
+#   - turn the Pi into the WiFi AP the ESP32s join:  sudo bash scripts/setup-ap.sh
+#   - flash + calibrate the ESP32 firmware (esp32_node1_sensor / node2 / node3)
+#   - wire the hardware (pinout is in each .ino header comment)
 
 set -euo pipefail
 
@@ -36,20 +40,39 @@ sudo apt-get install -y \
   nodejs npm \
   firefox fonts-noto-color-emoji \
   ffmpeg libavcodec-extra \
+  v4l-utils \
   python3-lgpio python3-flask python3-pil
 
 # ---------------- 2. npm packages ----------------
 say "npm install"
 npm install
 
-# ---------------- 3. python: torch + torchvision ----------------
-# /tmp is tmpfs (2GB on Pi 5) — too small for torch. Force pip onto disk.
-say "pip install torch torchvision"
-if ! python3 -c "import torch, torchvision" 2>/dev/null; then
-  mkdir -p /var/tmp/pipbuild
-  TMPDIR=/var/tmp pip install torch torchvision --break-system-packages --no-cache-dir
-else
-  echo "torch + torchvision already installed — skipping"
+# ---------------- 3. python: model backend ----------------
+# model_server.py picks its backend from the model file's extension. The model
+# shipped in public/ is .keras, so tensorflow is all that's needed by default —
+# torch is a ~1.5GB install and only pays off if you switch back to a .pt model.
+# /tmp is tmpfs (2GB on Pi 5) and too small for these wheels — force pip to disk.
+mkdir -p /var/tmp/pipbuild
+pip_install() {   # $1 = import name, $2.. = pip packages
+  local mod="$1"; shift
+  if python3 -c "import $mod" 2>/dev/null; then
+    echo "$mod already installed — skipping"
+  else
+    TMPDIR=/var/tmp pip install "$@" --break-system-packages --no-cache-dir
+  fi
+}
+
+say "pip install tensorflow (Keras 3 backend)"
+pip_install tensorflow tensorflow
+
+if [[ "${WITH_TORCH:-0}" != "0" ]]; then
+  say "pip install torch torchvision (WITH_TORCH=1)"
+  pip_install torch torch torchvision
+fi
+
+if [[ "${WITH_ONNX:-0}" != "0" ]]; then
+  say "pip install onnxruntime (WITH_ONNX=1)"
+  pip_install onnxruntime onnxruntime
 fi
 
 # ---------------- 4. /boot/firmware/config.txt ----------------
@@ -92,9 +115,10 @@ cat <<EOF
 Next steps before rebooting:
   - copy your trained model to     $REPO/public/  (then set MODEL_PATH in model_server.py)
   - copy voice clips into          $REPO/public/voice/*.mp3
-  - flash the ESP32 firmware       $REPO/esp32_sensor_sharp_ir/
-    and re-calibrate HX711         (CALIBRATION_FACTOR + BASELINE)
-  - wire the hardware              (pinout in the .ino header comment)
+  - turn this Pi into the AP       sudo bash $REPO/scripts/setup-ap.sh
+  - flash the ESP32 firmware       $REPO/esp32_node1_sensor/ (+ node2, node3)
+    and re-calibrate HX711         (CALIBRATION_FACTOR + BASELINE in node #1)
+  - wire the hardware              (pinout in each .ino header comment)
 
 Then:  sudo reboot
 
