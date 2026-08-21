@@ -11,7 +11,8 @@ Capybara Waste Sorter — ESP32 NODE #1: presence + weight  (WiFi / WebSocket)
 ส่ง (node="sensor"):
 {"node":"sensor","event":"detected","grams":123.4}   // เห็นของ + น้ำหนักล่าสุด
 {"node":"sensor","event":"cleared","grams":0.5}       // ไม่เห็นของแล้ว
-{"node":"sensor","event":"weight","grams":123.4}      // ส่งซ้ำทุก 500ms ระหว่างมีของ
+{"node":"sensor","event":"weight","grams":123.4}      // ทุก 500ms ระหว่างมีของ + ต่ออีก
+                                                      // WEIGHT_TAIL_MS หลัง cleared
 {"node":"camera","event":"on"}                        // เห็นมือรอบแรก → ไฟกล้องติดเลย
                                                       // (ไม่รอ STABLE_READS; hub บน Pi
                                                       //  ยิง /camera ให้ ไม่ผ่านเบราว์เซอร์)
@@ -57,7 +58,14 @@ const int   ECHO_PIN     = 18;
 const int   TRIG_PIN2    = 27;    // ตัวที่ 2
 const int   ECHO_PIN2    = 26;
 const float PRESENT_CM   = 40.0;  // ตัวใดตัวหนึ่ง < ค่านี้ = มีมือ; ทั้งคู่ >= = ว่าง
-const int   STABLE_READS = 5;
+const int   STABLE_READS = 3;     // อ่านได้ค่าเดิมติดกันกี่รอบถึงเชื่อ (x100ms)
+// ต้องเห็นติดกันกี่รอบถึงจุดไฟ — เดิมใช้รอบเดียวเพื่อให้ไวที่สุด แต่ HC-SR04 มีค่าอ่าน
+// หลอนแบบพุ่งเดี่ยวปนมา (วัดได้ ~4% ของรอบอ่าน) ทำให้ไฟกระพริบรัวตลอดเวลาทั้งที่
+// ไม่มีใครมา — 3 รอบกรองค่าหลอนเดี่ยวทิ้ง
+//
+// หมายเหตุ: ตอนนี้เท่ากับ STABLE_READS พอดี ไฟจึงติดพร้อม detected ไม่ได้นำหน้าแล้ว
+// ถ้าอยากให้ไฟมาก่อนต้องลดเป็น 2 แต่จะมีค่าหลอนหลุดมาบ้าง (~1 ครั้ง/นาที)
+const int   LIGHT_ON_READS = 3;
 
 // ---------- HX711 load cell ----------
 const int   HX711_DT           = 21;
@@ -70,6 +78,13 @@ HX711 scale;
 const unsigned long IR_READ_INTERVAL     = 100;
 const unsigned long WEIGHT_READ_INTERVAL = 300;
 const unsigned long WEIGHT_BROADCAST_MS  = 500;
+// ส่งน้ำหนักต่ออีกเท่านี้หลัง cleared — ถ้าหยุดส่งตอน cleared เว็บจะถือค่าแช่แข็งไว้
+// แล้วมองไม่เห็นว่ามีของมาวางทีหลัง
+// ต้องคลุมสองช่วงนี้ของฝั่งเว็บ (ดู src/pages/CameraPage.jsx):
+//   NO_ITEM_GRACE_MS 15s = ช่วงรอให้คนวางของ ก่อนยอมแพ้กลับหน้าแรก
+//   CAPTURE_DELAY_MS  3s = นับถอยหลังก่อนถ่าย แล้วเช็คซ้ำว่าของยังอยู่ไหม
+// ถ้าค่านี้สั้นกว่า จะมีช่วงตาบอดที่วางของแล้วระบบไม่รู้เรื่อง
+const unsigned long WEIGHT_TAIL_MS       = 19000;
 
 // ---------- ความเป็นเจ้าของไฟกล้อง ----------
 // IDLE  ไฟดับ พร้อมจุด — เห็นของรอบแรกเมื่อไหร่จุดทันที
@@ -83,13 +98,15 @@ enum LightOwner { LIGHT_IDLE, LIGHT_ARMED, LIGHT_WEB };
 const unsigned long WEB_HOLD_MAX_MS = 40000;   // กัน WEB ค้างถ้า all_off ไม่มา
 
 LightOwner lightOwner = LIGHT_IDLE;
-int   absentReads   = 0;       // นับรอบที่ของหายไปตอนยัง ARMED → ครบ 5 แล้วดับ
+int   presentReads  = 0;       // นับรอบที่เห็นของติดกัน → ครบ LIGHT_ON_READS แล้วจุดไฟ
+int   absentReads   = 0;       // นับรอบที่ของหายไปตอนยัง ARMED → ครบ STABLE_READS แล้วดับ
 unsigned long webSince = 0;
 
 bool  currentState  = false;
 int   sameReads     = 0;
 float currentWeight = 0.0;
 unsigned long lastRead = 0, lastWeightRead = 0, lastWeightSend = 0, lastDbg = 0;
+unsigned long clearedAt = 0;   // เวลาที่ส่ง cleared ล่าสุด — ใช้คุมหางการส่งน้ำหนัก
 
 // ---------- HC-SR04 read → cm (ระบุขาได้ ใช้ได้ทั้ง 2 ตัว) ----------
 float readDistanceCm(int trig, int echo) {
@@ -211,8 +228,10 @@ void loop() {
     }
 
     // ไฟกล้อง — เดินตาม lightOwner (ดูคำอธิบายสถานะด้านบน)
+    if (present) presentReads++; else presentReads = 0;
+
     if (lightOwner == LIGHT_IDLE) {
-      if (present) {                                  // สัญญาณแรกที่เห็นของ → จุดเลย
+      if (presentReads >= LIGHT_ON_READS) {           // เห็นติดกันพอแล้ว → จุดไฟ
         lightOwner  = LIGHT_ARMED;
         absentReads = 0;
         sendCameraLight(true);
@@ -238,6 +257,7 @@ void loop() {
         lightOwner = LIGHT_WEB;
         webSince   = now;
       }
+      if (!currentState) clearedAt = now;
       sendEvent(currentState ? "detected" : "cleared");
     }
   }
@@ -248,8 +268,10 @@ void loop() {
     currentWeight = readWeight();
   }
 
-  // ส่งน้ำหนักเป็นระยะขณะมีของวาง
-  if (currentState && now - lastWeightSend >= WEIGHT_BROADCAST_MS) {
+  // ส่งน้ำหนักเป็นระยะขณะมีของวาง + ต่ออีก WEIGHT_TAIL_MS หลังเอามือออก
+  // (ช่วงหางคือตอนที่เว็บนับถอยหลังแล้วเช็คซ้ำก่อนลั่นชัตเตอร์ ต้องมีค่าสด ๆ ให้ดู)
+  bool sendWeight = currentState || (clearedAt && now - clearedAt < WEIGHT_TAIL_MS);
+  if (sendWeight && now - lastWeightSend >= WEIGHT_BROADCAST_MS) {
     lastWeightSend = now;
     sendEvent("weight");
   }

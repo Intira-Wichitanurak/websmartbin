@@ -3,7 +3,10 @@
  *
  * ทุกอุปกรณ์เชื่อมเข้ามาที่ ws://<pi>:8181/ :
  *   - ESP32 #1 (sensor) : ส่ง {"node":"sensor","event":"detected|cleared|weight","grams":..}
- *   - ESP32 #2 (relay)  : รับ  {"node":"relay","event":"classify|camera_active|camera_off|all_off",..}
+ *                         + {"node":"camera","event":"on"} → hub ยิงไฟกล้องให้ทันที
+ *                           (ดู cameraLight ด้านล่าง — ไม่ผ่านเบราว์เซอร์)
+ *   - ESP32 #2 (relay)  : รับ  {"node":"relay","event":"classify|all_off",..}
+ *                         (ไฟกล้องไม่เกี่ยวกับ node นี้ — Pi คุมขา GPIO เอง)
  *   - ESP32 #3 (bins)   : ส่ง {"node":"bins","event":"levels","bins":[..]}  / รับ {"node":"leds",..}
  *   - เว็บ React        : รับ sensor+bins, ส่ง relay+leds
  *
@@ -17,7 +20,8 @@
 
 import { WebSocketServer } from 'ws'
 
-const WS_PORT = Number(process.env.HUB_WS_PORT || 8181)
+const WS_PORT    = Number(process.env.HUB_WS_PORT || 8181)
+const CAMERA_URL = process.env.CAMERA_API_URL || 'http://127.0.0.1:8000/camera'
 
 const wss = new WebSocketServer({ port: WS_PORT })
 console.log(`[hub] WebSocket listening on ws://0.0.0.0:${WS_PORT}/`)
@@ -26,8 +30,22 @@ console.log(`[hub] WebSocket listening on ws://0.0.0.0:${WS_PORT}/`)
 // แล้วอยากเห็นระดับถัง/น้ำหนักล่าสุดทันที)
 const lastByNode = new Map()
 
-function nodeOf(line) {
-  try { return JSON.parse(line)?.node || null } catch { return null }
+function parse(line) {
+  try { return JSON.parse(line) } catch { return null }
+}
+
+/** ไฟกล้อง (Pi GPIO ผ่าน model_server.py) — no-fail, เตือนครั้งเดียวถ้าต่อไม่ได้ */
+function cameraLight(on) {
+  fetch(CAMERA_URL, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ on }),
+  }).catch(err => {
+    if (!cameraLight._warned) {
+      console.warn('[hub] camera server unreachable at', CAMERA_URL, '—', err.message)
+      cameraLight._warned = true
+    }
+  })
 }
 
 wss.on('connection', (client, req) => {
@@ -43,9 +61,20 @@ wss.on('connection', (client, req) => {
     const line = data.toString().trim()
     if (!line) return
 
-    const node = nodeOf(line)
+    const msg  = parse(line)
+    const node = msg?.node || null
     if (node) lastByNode.set(node, line)
     console.log('[hub] <-', line)
+
+    // ไฟกล้อง — ESP32 #1 ยิง {"node":"camera","event":"on"} เองเมื่อเห็นของ
+    // hub อยู่บน Pi เครื่องเดียวกับ model_server อยู่แล้ว จึงยิง GPIO ต่อได้เลย
+    // ไม่ต้องอ้อมผ่านเบราว์เซอร์
+    //
+    // event:"off" ก็ส่งต่อเหมือนกัน — node #1 จะสั่งดับเฉพาะตอนที่ยังถือสิทธิ์อยู่
+    // (สถานะ LIGHT_ARMED = จุดไฟแล้วแต่ยังไม่เกิด detected) พอเกิดแล้วมันจะ
+    // ส่งมอบให้เว็บและไม่แตะไฟอีกจนกว่าจะได้ all_off คืน — ดู lightOwner ใน
+    // esp32_node1_sensor.ino. ยังมี CAMERA_AUTO_OFF_S ฝั่ง model_server เป็นตาข่ายรอง
+    if (node === 'camera') cameraLight(msg.event !== 'off')
 
     // broadcast ให้ทุกคน ยกเว้นผู้ส่ง
     for (const peer of wss.clients) {
