@@ -1,27 +1,38 @@
 {
+  "model": "bes4t.keras",
+  "arch": "MobileNetV3Large (Keras 3) — NHWC, พิกเซล 0-255, softmax ในกราฟ",
+  "image_size": 224,
+  "preprocess": "resize 224 bilinear + float32 NHWC ค่าดิบ 0-255 (rescaling อยู่ในโมเดล)",
   "classes": [
+    "Battery",
     "Bottle",
     "Cans",
-    "Danger",
+    "Food",
     "Foodpekage",
-    "Freshfood",
     "General"
   ],
   "class2idx": {
-    "Bottle": 0,
-    "Cans": 1,
-    "Danger": 2,
-    "Foodpekage": 3,
-    "Freshfood":4,
+    "Battery": 0,
+    "Bottle": 1,
+    "Cans": 2,            
+    "Food": 3,
+    "Foodpekage": 4,
     "General": 5
   },
   "idx2class": {
-    "0": "Bottle",
-    "1": "Cans",
-    "2": "Danger",
-    "3": "Foodpekage",
-    "4": "Freshfood",
+    "0": "Battery",
+    "1": "Bottle",
+    "2": "Cans",
+    "3": "Food",
+    "4": "Foodpekage",
     "5": "General"
   },
-  "image_size": 224
+  "class_to_app_type": {
+    "Battery": "hazardous",
+    "Bottle": "recyclable",
+    "Cans": "recyclable",
+    "Food": "wet",
+    "Foodpekage": "general",
+    "General": "general"
+  }
 }
