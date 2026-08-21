@@ -44,9 +44,6 @@ ESP32 (เกาะ WiFi ของ Pi → ws://192.168.50.1:8181/)
  └─ #3 esp32_node3_bins    HC-SR04 x4 วัดระดับถัง + LED 3 สี x4 → ส่ง levels, ← รับ leds
 ```
 
-> `esp32_bin_level_wifi/` เป็นเวอร์ชันเก่าของเซ็นเซอร์ระดับถัง (WebSocket server ของตัวเอง)
-> ปัจจุบันแทนที่ด้วย **node #3** แล้ว เก็บไว้อ้างอิงเฉยๆ
-
 ---
 
 ## 🔄 การทำงานตั้งแต่ต้นจนจบ
@@ -304,7 +301,7 @@ sudo reboot
 
 ```bash
 npm install
-cp .env.example .env          # แล้วตั้ง VITE_SENSOR_ENABLED=false, VITE_BIN_ENABLED=false
+cp .env.example .env          # แล้วตั้ง VITE_SENSOR_ENABLED=false
 npm run dev                   # http://localhost:5173
 ```
 
@@ -348,7 +345,7 @@ src/
  ├─ lib/classifyWaste.js    เรียก /classify + ตาราง WASTE_TYPES (ป้าย/สี/คำแนะนำ)
  ├─ lib/relay.js            ไฟถัง (WebSocket) + ไฟกล้อง (HTTP)
  ├─ lib/sensor.js           ตัวเชื่อม WebSocket hub + น้ำหนักล่าสุด
- ├─ lib/binStatus.js        สถานะถังเต็ม
+ ├─ lib/binStatus.js        สถานะถังเต็ม (ป้อนจาก node #3 ผ่าน App.jsx)
  └─ lib/sounds.js           เสียงเอฟเฟกต์ + เสียงพูด (mp3 หรือ TTS)
 
 scripts/

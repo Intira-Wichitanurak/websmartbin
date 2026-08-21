@@ -166,7 +166,7 @@ export function stopSpeech() { if (SS) SS.cancel() }
  * chirp before each utterance so it sounds like a personality, not a
  * monotone AI reading.
  */
-export function speak(text, opts = {}) {
+function speak(text, opts = {}) {
   if (!text || !SS || muted) return Promise.resolve()
 
   const clean = String(text)
@@ -224,14 +224,6 @@ export function speak(text, opts = {}) {
     // Tiny delay so the intro chirp plays before the speech starts
     setTimeout(() => SS.speak(u), chirpBefore ? 140 : 0)
   })
-}
-
-/** Diagnostics: list installed voices in the console (call from devtools) */
-export function listVoices() {
-  if (!SS) return []
-  const v = SS.getVoices()
-  console.table(v.map(x => ({ name: x.name, lang: x.lang, default: x.default })))
-  return v
 }
 
 /* --------------------------------------------------------------------------
