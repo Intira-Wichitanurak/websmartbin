@@ -1,7 +1,8 @@
 #!/bin/bash
 # Kiosk launcher — auto-runs when Pi logs in (called from ~/.config/labwc/autostart).
-# Starts the backend (Vite + serial bridge + Python model server) and opens
-# Chromium full-screen at the web app. Camera + autoplay are pre-approved.
+# Starts the backend (Vite + WebSocket hub + Python model server) and opens
+# Firefox full-screen (kiosk) at the web app. Camera + autoplay are pre-approved
+# via /etc/firefox/policies/policies.json.
 
 set -u
 
@@ -24,7 +25,7 @@ disown $BACKEND_PID
 echo "[kiosk] backend pid=$BACKEND_PID" >> "$LOG"
 
 # Wait up to 60s for Vite to respond before launching the browser.
-# (If it never comes up we still launch — Chromium will show a connection
+# (If it never comes up we still launch — Firefox will show a connection
 # error, which is more useful than failing silently.)
 for i in $(seq 1 60); do
   if curl -fsS -m 1 "$URL" >/dev/null 2>&1; then
@@ -35,27 +36,29 @@ for i in $(seq 1 60); do
 done
 
 # Small extra delay so PipeWire / camera / font cache finish coming up
-# (Chromium opening too early caused emojis to fall back to text glyphs
+# (opening the browser too early caused emojis to fall back to text glyphs
 #  and getUserMedia to fail on the first session.)
 sleep 3
 
-# Launch Chromium kiosk. exec so this script's PID becomes Chromium —
-# easier to kill / restart from the session manager.
-#   --use-fake-ui-for-media-stream      auto-accept camera/mic prompt (real device)
-#   --auto-accept-camera-and-microphone-capture  newer alias — covers Chromium ≥120
-#   --enable-features=...               nudge Chromium 143 to use legacy media path
-#   --autoplay-policy=...               sounds without user gesture
-exec chromium \
-  --start-fullscreen \
-  --password-store=basic \
-  --noerrdialogs \
-  --disable-restore-session-state \
-  --disable-session-crashed-bubble \
-  --disable-infobars \
-  --disable-features=TranslateUI,WebRtcPipeWireCamera \
-  --no-first-run \
-  --no-default-browser-check \
-  --check-for-update-interval=31536000 \
-  --autoplay-policy=no-user-gesture-required \
-  --window-position=0,0 \
-  "$URL"
+# Dedicated kiosk profile, deliberately outside ~/.mozilla/firefox/ so Firefox
+# never reads profiles.ini for this launch. That file had ShowSelector=1 set,
+# which pops the profile-manager screen instead of the app on every boot, and
+# left a trail of "Profile 1/2/3" dirs behind it. --profile <path> sidesteps the
+# selector and the cross-profile lock clash in one go.
+# Camera/mic + autoplay still apply: /etc/firefox/policies/policies.json is a
+# system-wide enterprise policy, not per-profile.
+FF_PROFILE="$HOME/.mozilla/firefox-kiosk"
+mkdir -p "$FF_PROFILE"
+
+# A kiosk bin gets unplugged rather than shut down, so Firefox rarely exits
+# cleanly and the profile lock survives the reboot. Clear any leftover instance
+# and its lock before claiming the profile.
+pkill -f '/usr/lib/firefox/firefox' 2>/dev/null && sleep 2
+rm -f "$FF_PROFILE/.parentlock" "$FF_PROFILE/lock"
+
+# exec so this script's PID becomes Firefox — easier to kill / restart from the
+# session manager.
+#   --kiosk                fullscreen, no toolbars/chrome
+#   MOZ_ENABLE_WAYLAND=1   native Wayland on labwc (proper fullscreen)
+export MOZ_ENABLE_WAYLAND=1
+exec firefox --kiosk --profile "$FF_PROFILE" "$URL"

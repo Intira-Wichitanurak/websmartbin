@@ -16,7 +16,7 @@
 #   6. wires up the labwc autostart -> scripts/kiosk-start.sh
 #
 # What it does NOT do — you still need to:
-#   - drop the trained model into public/best_model.pt
+#   - drop the trained model into public/ and point MODEL_PATH in model_server.py at it
 #   - drop voice clips into public/voice/*.mp3
 #   - flash + calibrate the ESP32 firmware (esp32_sensor_sharp_ir/)
 #   - wire the hardware (see esp32_sensor_sharp_ir.ino header for pinout)
@@ -34,7 +34,7 @@ say "apt packages (sudo)"
 sudo apt-get update
 sudo apt-get install -y \
   nodejs npm \
-  chromium fonts-noto-color-emoji \
+  firefox fonts-noto-color-emoji \
   ffmpeg libavcodec-extra \
   python3-lgpio python3-flask python3-pil
 
@@ -68,10 +68,10 @@ add_line 'dtparam=i2s=on'
 add_line 'dtoverlay=max98357a,sdmode-pin=4'
 add_line 'enable_uart=1'
 
-# ---------------- 5. Chromium policy (system-wide) ----------------
-say "Chromium media policy"
-sudo mkdir -p /etc/chromium/policies/managed
-sudo cp scripts/chromium-camera-policy.json /etc/chromium/policies/managed/camera.json
+# ---------------- 5. Firefox policy (system-wide) ----------------
+say "Firefox media policy (camera + autoplay)"
+sudo mkdir -p /etc/firefox/policies
+sudo cp scripts/firefox-policies.json /etc/firefox/policies/policies.json
 
 # ---------------- 6. labwc autostart ----------------
 say "labwc autostart -> scripts/kiosk-start.sh"
@@ -90,7 +90,7 @@ cat <<EOF
 ✅  Install finished.
 
 Next steps before rebooting:
-  - copy your trained model to     $REPO/public/best_model.pt
+  - copy your trained model to     $REPO/public/  (then set MODEL_PATH in model_server.py)
   - copy voice clips into          $REPO/public/voice/*.mp3
   - flash the ESP32 firmware       $REPO/esp32_sensor_sharp_ir/
     and re-calibrate HX711         (CALIBRATION_FACTOR + BASELINE)
