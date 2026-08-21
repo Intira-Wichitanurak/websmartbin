@@ -251,7 +251,7 @@ export function listVoices() {
  *    bin_full_wet   bin_full_recyclable   bin_full_hazardous   bin_full_general
  * -------------------------------------------------------------------------- */
 
-export function preloadVoice(clipName) {
+function preloadVoice(clipName) {
   if (!clipName) return
   const a = new Audio(`/voice/${clipName}.mp3`)
   a.preload = 'auto'

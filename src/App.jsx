@@ -2,21 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ReadyPage  from './pages/ReadyPage.jsx'
 import CameraPage from './pages/CameraPage.jsx'
 import ResultPage from './pages/ResultPage.jsx'
-import Modal from './components/Modal.jsx'
-import { isMuted, setMuted, unlockAudio, sfx, stopSpeech, playVoice } from './lib/sounds.js'
+import { isMuted, setMuted, unlockAudio, sfx, stopSpeech } from './lib/sounds.js'
 import { useSensor } from './hooks/useSensor.js'
-import { useBinStatus } from './hooks/useBinStatus.js'
 import { getSensor } from './lib/sensor.js'
 import { getBinStatus, BIN_KEYS } from './lib/binStatus.js'
-import { WASTE_TYPES } from './lib/classifyWaste.js'
-import { relayCameraActive } from './lib/relay.js'
+import { relayCameraActive, relayAllOff } from './lib/relay.js'
 
 const STAGE_W = 1024
 const STAGE_H = 600
 
 // เชื่อมข้อมูลระดับถังจาก node #3 (มาทาง hub เป็น event 'levels') เข้าฟีเจอร์ถังของเว็บ
-// node #3 ระบุถังด้วย index — แมปเป็นชนิดขยะตามการติดตั้งจริง:
-const BIN_INDEX_TO_TYPE = ['wet', 'hazardous', 'general', 'recyclable']  // ถัง 0,1,2,3
+// node #3 ระบุถังด้วย index — แมปเป็นชนิดขยะตามการติดตั้งสายจริง:
+//   เซนเซอร์ 0=ถังอันตราย  1=ถังทั่วไป  2=ถังเปียก  3=ถังรีไซเคิล
+const BIN_INDEX_TO_TYPE = ['hazardous', 'general', 'wet', 'recyclable']  // ถัง 0,1,2,3
 const BIN_FULL_PCT      = 80    // pct ≥ ค่านี้ = ถังเต็ม (ตรงกับ LED แดงของ node #3)
 
 export default function App() {
@@ -43,6 +41,12 @@ export default function App() {
   const resultDoneRef = useRef(false)
 
   function goHome()   { setResult(null); setPage('ready') }
+
+  // ยกเลิกรอบถ่ายเพราะน้ำหนักไม่ขยับ (ไม่มีของวางจริง — ดู CameraPage)
+  // ต้องเรียก relayAllOff ด้วย ไม่ใช่แค่เปลี่ยนหน้า เพราะปกติหน้าผลลัพธ์เป็นตัวปิดรอบ
+  // ให้ทั้งดับไฟกล้องและส่ง all_off กลับไปบอก node #1 ให้ปลดสิทธิ์ไฟคืน (LIGHT_WEB → IDLE)
+  // รอบนี้ไม่ได้ผ่านหน้าผลลัพธ์ จึงต้องปิดเอง ไม่งั้นไฟค้างจนกว่าจะครบ timeout
+  function cancelCapture() { relayAllOff(); goHome() }
   function goCamera() { setResult(null); setPage('camera') }
   function gotResult(r) {
     setResult(r)
@@ -61,9 +65,10 @@ export default function App() {
 
   const sensorConnected = useSensor({
     detected: () => {
-      // Every time waste arrives, kick the camera light on + reset the
-      // 5-minute idle timer on the server. The light stays on across
-      // pages and only goes off if nothing new arrives for 5 minutes.
+      // Redundant on paper — node #1 lights the lamp itself the moment it sees
+      // something, well before this fires. Kept as the fallback for a node #1
+      // running older firmware that does not send {"node":"camera"} at all.
+      // Either way it refreshes the CAMERA_AUTO_OFF_S timer in model_server.py.
       relayCameraActive()
       // Trigger the flow only from the welcome screen
       if (pageRef.current === 'ready') goCamera()
@@ -91,24 +96,9 @@ export default function App() {
     return off
   }, [])
 
-  // Bin-fill status from the second (WiFi) ESP32. When a bin flips empty→full,
-  // pop a global notification — it overlays any page so it's visible even mid-
-  // flow. ResultPage independently blocks directing waste into a full bin.
-  const [fullBin, setFullBin] = useState(null)   // bin key currently shown, or null
-  useBinStatus((bin) => {
-    setFullBin(bin)
-    sfx.alert()
-    const info = WASTE_TYPES[bin] ?? WASTE_TYPES.general
-    playVoice(`bin_full_${bin}`,
-      `ถัง${info.label}เต็มแล้วน้า กรุณาใช้ถังอื่น หรือแจ้งเจ้าหน้าที่มาเทถังก่อนน้า`)
-  })
-
-  // Auto-dismiss the notification after a few seconds.
-  useEffect(() => {
-    if (!fullBin) return
-    const t = setTimeout(() => setFullBin(null), 6000)
-    return () => clearTimeout(t)
-  }, [fullBin])
+  // หมายเหตุ: เอาป๊อปอัพ "ถังเต็ม" ที่เคยเด้งกลางจอทันทีที่ถังเต็ม (ทุกหน้า) ออกแล้ว
+  // ให้แจ้งเตือนถังเต็ม "เฉพาะในหน้าผลลัพธ์ หลังบอกประเภทขยะ" (ดู ResultPage) เท่านั้น
+  // ระดับถังยังถูกป้อนเข้า getBinStatus ผ่าน bridge ด้านบน เพื่อให้ ResultPage เช็ค isFull ได้
 
   // Dev shortcuts for testing without hardware: D = detected, C = cleared,
   // 1..4 = toggle bin-full for wet/recyclable/hazardous/general.
@@ -139,7 +129,7 @@ export default function App() {
 
       <section className="flex-1 min-h-0 relative z-10 px-4 py-2">
         {page === 'ready'  && <ReadyPage />}
-        {page === 'camera' && <CameraPage onResult={gotResult} />}
+        {page === 'camera' && <CameraPage onResult={gotResult} onEmpty={cancelCapture} />}
         {page === 'result' && (
           <ResultPage
             result={result}
@@ -153,25 +143,7 @@ export default function App() {
         ทำด้วย 💖 โดยน้องคาปิ
       </footer>
 
-      {/* Global "bin full" notification — fires the moment a bin flips to full,
-          on any page. Auto-dismisses after a few seconds. */}
-      <BinFullPopup bin={fullBin} />
     </main>
-  )
-}
-
-/* -------------------- bin-full notification -------------------- */
-function BinFullPopup({ bin }) {
-  const info = bin ? (WASTE_TYPES[bin] ?? WASTE_TYPES.general) : null
-  return (
-    <Modal
-      open={!!bin}
-      tone="danger"
-      mood="sad"
-      mascotSrc="/mascos5.png"
-      title={info ? `ถัง${info.label}เต็มแล้วน้า ${info.emoji}` : ''}
-      message="ถังนี้เต็มแล้ว ใส่เพิ่มไม่ได้น้า — กรุณาใช้ถังอื่น หรือแจ้งเจ้าหน้าที่มาเทถังก่อนน้า 🗑️"
-    />
   )
 }
 

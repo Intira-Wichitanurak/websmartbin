@@ -8,8 +8,8 @@ import { getSensor } from '../lib/sensor.js'
 // น้ำหนักจาก HX711 > เกณฑ์ของชนิดนั้น = ถือว่ามีเศษอาหารติด → เด้ง popup ให้เคาะทิ้งก่อน
 // ชนิดที่ไม่อยู่ในตาราง (เช่น General) จะข้ามการเช็คน้ำหนัก
 const FOOD_THRESHOLD_GRAMS = {
-  Bottle:     100,
-  Cans:       150,
+  Bottle:    80,
+  Cans:      38,
   Foodpekage:  50,
   // General — ไม่เช็ค
 }
@@ -34,16 +34,37 @@ const WARMUP_MS          = 800   // give the video a moment before sampling
 // node #1 ส่ง cleared) ค่อยถ่าย — กันมือติดในเฟรม
 const CAPTURE_DELAY_MS = 3000    // หน่วงหลังเอามือออก (cleared) ก่อนถ่าย — นับถอยหลังบนจอ
 
-export default function CameraPage({ onResult }) {
+// น้ำหนักบนถาดต้องเกินเท่านี้ (กรัม) ถึงจะถือว่ามีของวางอยู่
+// ultrasonic บอกได้แค่ "มีอะไรบังอยู่" ซึ่งมือเปล่าก็เข้าเงื่อนไข — ตาชั่งเป็นตัวเดียว
+// ที่ยืนยันได้ว่ามีของอยู่บนถาดจริง จึงใช้เป็นด่านสุดท้ายก่อนถ่าย
+//
+// ใช้ค่าสัมบูรณ์ ไม่ใช่ส่วนต่างจากตอนเข้าหน้ากล้อง เพราะถ้าคนปล่อยของลงเร็วกว่าที่
+// ultrasonic จะเห็นมือ ค่าตั้งต้นจะถูกจับตอนของอยู่บนถาดแล้ว ส่วนต่างเป็น 0 →
+// ปฏิเสธทั้งที่มีของจริง
+// ถาดว่างอ่านได้ 1.4-1.7 กรัม (จาก log จริง) และนิ่งกว่า 1 กรัม 2 กรัมจึงเฉียดขอบบน
+// ของค่าถาดว่างอยู่ — แลกมาเพื่อให้รับของเบา ๆ (ซองขนม/หลอด) ได้ ถ้าเจอเด้ง
+// "ไม่เจอขยะ" ทั้งที่มีของ หรือเด้งเข้าโหมดถ่ายทั้งที่ถาดว่าง ให้ดันกลับเป็น 3
+const MIN_ITEM_WEIGHT_G = 3
+
+// เอามือออกแล้วแต่ถาดยังว่าง — ยังไม่ถือว่าจบ ให้เวลาคนวางของก่อนเท่านี้
+// (ultrasonic ยิง cleared ทันทีที่มือพ้นระยะ ซึ่งมักเกิดก่อนคนวางของจริงด้วยซ้ำ
+//  ถ้าตัดจบตรงนั้นเลย หน้าจอจะเด้งกลับหน้าแรกใส่คนที่กำลังจะวาง)
+const NO_ITEM_GRACE_MS = 15000
+const ITEM_POLL_MS     = 300     // ถี่แค่ไหนในการเช็คว่ามีของมาวางหรือยัง
+const EMPTY_HOLD_MS      = 2600  // ค้างข้อความ "ไม่เจอขยะ" ก่อนกลับหน้าแรก
+
+export default function CameraPage({ onResult, onEmpty }) {
   const videoRef    = useRef(null)
   const canvasRef   = useRef(null)
   const streamRef   = useRef(null)
   const sampleRef   = useRef(null)
   const lastFrame   = useRef(null)
-  const lastMotion  = useRef(0)
-  const hasMovedRef = useRef(false)
   const capturedRef = useRef(false)   // กันถ่ายซ้ำ (ยิงครั้งเดียวต่อการเข้าหน้ากล้อง)
   const captureTimersRef = useRef([]) // timer ของการนับถอยหลัง (เก็บไว้ยกเลิกได้)
+  const pendingCaptureRef = useRef(false) // cleared มาก่อนกล้องพร้อม → คิวไว้ถ่ายเมื่อพร้อม
+  const handOutRef      = useRef(false)  // มือพ้นระยะแล้วหรือยัง (เข้าหน้านี้ตอน detected = ยัง)
+  const waitPollRef     = useRef(null)   // ตัวเช็คว่ามีของมาวางหรือยัง ระหว่างรอ
+  const waitDeadlineRef = useRef(null)   // หมดเวลารอ → ยอมแพ้ กลับหน้าแรก
 
   // phase: init | denied | unsupported | watching | scanning | capturing | processing
   const [phase, setPhase] = useState('init')
@@ -51,7 +72,7 @@ export default function CameraPage({ onResult }) {
   const phaseRef = useRef(phase)
   phaseRef.current = phase
 
-  const CAMERA_ZOOM = 1.5
+  const CAMERA_ZOOM =0.5
 
   /* ---------------- start camera ---------------- */
   useEffect(() => {
@@ -124,8 +145,6 @@ export default function CameraPage({ onResult }) {
         const avg = sum / (SAMPLE_SIZE * SAMPLE_SIZE * 3)
 
         if (avg > MOVEMENT_THRESHOLD) {
-          hasMovedRef.current = true
-          lastMotion.current = Date.now()
           setPhase(p => {
             if (p !== 'scanning') sfx.click()   // chirp when first detected
             return 'scanning'
@@ -152,30 +171,100 @@ export default function CameraPage({ onResult }) {
     setCountdown(0)
   }
 
+  // เริ่มนับถอยหลัง CAPTURE_DELAY_MS แล้วถ่าย (กันซ้ำ/กันเริ่มซ้อน)
+  // ด่านน้ำหนัก — ultrasonic บอกได้แค่ "มีอะไรบังอยู่" ซึ่งมือเปล่าก็เข้าเงื่อนไข
+  // ตาชั่งเป็นตัวเดียวที่ยืนยันได้ว่ามีของวางลงไปจริง
+  // คืน true ถ้ายังไม่เคยได้ค่าน้ำหนัก (ตาชั่งหลุด/ยังไม่ส่งมา) — ไม่บล็อกการใช้งาน
+  function hasRealItem() {
+    const nowG = getSensor().lastWeight()
+    if (nowG == null) return true
+    return nowG > MIN_ITEM_WEIGHT_G
+  }
+
+  // จบรอบแบบไม่ถ่าย — ขึ้นข้อความบอกแล้วกลับหน้าแรกไปรอคำสั่งใหม่
+  function abortEmpty() {
+    capturedRef.current = true          // ปิดรอบนี้ กัน cleared ที่ตามมายิงซ้ำ
+    cancelCountdown()
+    setPhase('empty')
+    // ใส่ใน captureTimersRef เพื่อให้ cleanup ตอน unmount เคลียร์ให้ด้วย
+    captureTimersRef.current.push(setTimeout(() => onEmpty?.(), EMPTY_HOLD_MS))
+  }
+
+  function stopWaiting() {
+    clearInterval(waitPollRef.current);     waitPollRef.current = null
+    clearTimeout(waitDeadlineRef.current);  waitDeadlineRef.current = null
+  }
+
+  // ถาดยังว่าง — ยังไม่ตัดจบ รอให้คนวางของภายใน NO_ITEM_GRACE_MS ก่อน
+  // เช็คด้วยการ poll แทนที่จะรอ event 'cleared' รอบใหม่ เพราะของอาจถูกวางลง
+  // โดยมือไม่เข้าระยะ ultrasonic อีกเลย (หย่อนจากด้านบน) แล้วจะไม่มี event ตามมา
+  function waitForItem() {
+    if (waitPollRef.current) return          // รออยู่แล้ว ไม่ต้องเริ่มซ้อน
+    cancelCountdown()
+    setPhase('waiting')
+    waitPollRef.current = setInterval(() => {
+      // ต้องรอให้มือพ้นเฟรมก่อนด้วย ไม่งั้นนับถอยหลังทั้งที่มือยังบังของอยู่
+      if (!capturedRef.current && handOutRef.current && hasRealItem()) {
+        stopWaiting()
+        startCountdown()
+      }
+    }, ITEM_POLL_MS)
+    waitDeadlineRef.current = setTimeout(() => { stopWaiting(); abortEmpty() }, NO_ITEM_GRACE_MS)
+  }
+
+  function startCountdown() {
+    if (capturedRef.current || captureTimersRef.current.length) return
+
+    // เอามือออกแล้วแต่ถาดยังว่าง = ยังไม่ได้วางอะไร — ให้เวลาก่อน อย่าเพิ่งไล่กลับ
+    if (!hasRealItem()) { waitForItem(); return }
+    stopWaiting()
+
+    const secs = Math.round(CAPTURE_DELAY_MS / 1000)
+    setCountdown(secs)
+    for (let i = 1; i < secs; i++) {
+      captureTimersRef.current.push(setTimeout(() => { setCountdown(secs - i); sfx.click() }, i * 1000))
+    }
+    captureTimersRef.current.push(setTimeout(() => {
+      captureTimersRef.current = []
+      setCountdown(0)
+      if (capturedRef.current) return
+      // เช็คซ้ำก่อนลั่นชัตเตอร์ — ของอาจถูกหยิบกลับ/ตกหล่นระหว่างนับถอยหลัง 3 วิ
+      // (node #1 ส่งน้ำหนักต่ออีก WEIGHT_TAIL_MS หลัง cleared ค่าตรงนี้จึงยังสด)
+      if (!hasRealItem()) { waitForItem(); return }
+      capturedRef.current = true
+      autoCapture()
+    }, CAPTURE_DELAY_MS))
+  }
+
   useEffect(() => {
     const sensor = getSensor()
     const off = sensor.on((event) => {
       if (capturedRef.current) return
-      // มือกลับเข้ามาระหว่างนับถอยหลัง → ยกเลิก
-      if (event === 'detected') { if (captureTimersRef.current.length) cancelCountdown(); return }
-      if (event !== 'cleared') return
-      // ถ่ายได้เฉพาะตอนกล้องพร้อม (watching/scanning) เท่านั้น
-      if (phaseRef.current !== 'watching' && phaseRef.current !== 'scanning') return
-      if (captureTimersRef.current.length) return   // กำลังนับอยู่แล้ว
-      // เริ่มนับถอยหลัง แล้วค่อยถ่าย
-      const secs = Math.round(CAPTURE_DELAY_MS / 1000)
-      setCountdown(secs)
-      for (let i = 1; i < secs; i++) {
-        captureTimersRef.current.push(setTimeout(() => { setCountdown(secs - i); sfx.click() }, i * 1000))
+      // มือกลับเข้ามา → ยกเลิกนับถอยหลัง + ล้างคิว
+      if (event === 'detected') {
+        handOutRef.current = false
+        pendingCaptureRef.current = false
+        if (captureTimersRef.current.length) cancelCountdown()
+        return
       }
-      captureTimersRef.current.push(setTimeout(() => {
-        captureTimersRef.current = []
-        setCountdown(0)
-        if (!capturedRef.current) { capturedRef.current = true; autoCapture() }
-      }, CAPTURE_DELAY_MS))
+      if (event !== 'cleared') return
+      handOutRef.current = true
+      if (phaseRef.current === 'watching' || phaseRef.current === 'scanning' || phaseRef.current === 'waiting') {
+        startCountdown()                    // กล้องพร้อม → นับถอยหลังเลย
+      } else {
+        pendingCaptureRef.current = true     // เอามือออกก่อนกล้องเปิดเสร็จ → คิวไว้
+      }
     })
-    return () => { off(); cancelCountdown() }
+    return () => { off(); cancelCountdown(); stopWaiting() }
   }, [])
+
+  // กล้องพร้อม (watching) + มีคิวถ่ายค้าง (เอามือออกไปตอนกล้องยังโหลด) → เริ่มนับถอยหลัง
+  useEffect(() => {
+    if ((phase === 'watching' || phase === 'scanning') && pendingCaptureRef.current) {
+      pendingCaptureRef.current = false
+      startCountdown()
+    }
+  }, [phase])
 
   /* ---------------- capture + classify ---------------- */
   async function autoCapture() {
@@ -230,6 +319,8 @@ export default function CameraPage({ onResult }) {
     scanning:    { mood: 'happy',  text: 'เห็นแล้ว ถือนิ่ง ๆ น้า!',  speech: '' },
     capturing:   { mood: 'starry', text: 'ถ่ายภาพแล้ว!',           speech: '' },
     processing:  { mood: 'starry', text: 'น้องคาปิกำลังคิด...',     speech: 'น้องคาปิกำลังคิดอยู่นะ รอแป๊บนึงน้า' },
+    waiting:     { mood: 'happy',  text: 'วางขยะได้เลยน้า~',        speech: 'วางขยะลงตรงนี้ได้เลยน้า น้องคาปิรออยู่' },
+    empty:       { mood: 'sad',    text: 'ยังไม่เจอขยะน้า~',        speech: 'อ้าว ยังไม่มีขยะวางเลยน้า เดี๋ยวน้องคาปิกลับไปรอที่หน้าแรกนะ' },
     denied:      { mood: 'sad',    text: 'กล้องยังไม่เปิดน้า',      speech: 'กล้องยังไม่เปิดเลยน้า ลองกดอนุญาตดูสิ' },
     unsupported: { mood: 'sad',    text: 'เครื่องนี้ใช้กล้องไม่ได้', speech: 'เครื่องนี้ใช้กล้องไม่ได้น้า' }
   }[phase] ?? { mood: 'happy', text: '', speech: '' }

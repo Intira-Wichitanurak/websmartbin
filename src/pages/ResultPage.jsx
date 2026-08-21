@@ -60,9 +60,9 @@ export default function ResultPage({ result, onHome, onFlowDone }) {
         { chirpAfter: true })
       if (stop()) return
 
-      // 1.5) Bin-full guard — the user now knows the waste type, so only here
-      //      do we tell them the bin can't take it. Skip the thank-you and
-      //      head home instead.
+      // 1.5) Bin-full guard — the user now knows the waste type, so tell them
+      //      the bin can't take it. Show the bin-full popup FIRST, then fall
+      //      through to the thank-you flow (bin-full before thank-you).
       if (isBinFull()) {
         relayAllOff()                                // stop pointing at that bin
         await sleep(600); if (stop()) return
@@ -71,10 +71,8 @@ export default function ResultPage({ result, onHome, onFlowDone }) {
         await playVoice(`bin_full_${result.type}`,
           `แต่ว่าถัง${info.label}เต็มแล้วน้า ยังใส่ไม่ได้ กรุณาแจ้งเจ้าหน้าที่มาเทถังก่อนน้า`)
         if (stop()) return
-        onFlowDone?.()                               // speech done → cleared can goHome
-        await sleep(3000); if (stop()) return
-        onHome()
-        return
+        await sleep(2500); if (stop()) return        // ค้างป๊อปอัพถังเต็มสักครู่
+        setPopup(null)                               // ปิดถังเต็ม แล้วไหลต่อไปหน้าขอบคุณ
       }
 
       // 2) breathing room before thank-you

@@ -46,11 +46,6 @@ export function relayCameraActive() {
   postCamera(true)
 }
 
-/** ปิดไฟกล้อง (Pi GPIO) */
-export function relayCameraOff() {
-  postCamera(false)
-}
-
 /** ปิดไฟประเภทขยะทุกดวง (ESP32 #2) + ปิดไฟกล้อง (Pi) */
 export function relayAllOff() {
   sendRelay({ event: 'all_off' })
