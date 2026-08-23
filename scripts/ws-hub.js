@@ -23,8 +23,15 @@ import { WebSocketServer } from 'ws'
 const WS_PORT    = Number(process.env.HUB_WS_PORT || 8181)
 const CAMERA_URL = process.env.CAMERA_API_URL || 'http://127.0.0.1:8000/camera'
 
+/** เวลาแบบ HH:MM:SS.mmm นำหน้าทุกบรรทัด — kiosk.log ถูก concurrently หน่วงเป็นก้อน
+ *  ไล่ปัญหาย้อนหลัง (เช่น เซ็นเซอร์เด้งเองตอนไหน ถี่แค่ไหน) จึงต้องมีเวลาติดมากับบรรทัด */
+const ts = () => new Date().toTimeString().slice(0, 8) + '.' +
+                 String(new Date().getMilliseconds()).padStart(3, '0')
+const log  = (...a) => console.log(ts(), ...a)
+const warn = (...a) => console.warn(ts(), ...a)
+
 const wss = new WebSocketServer({ port: WS_PORT })
-console.log(`[hub] WebSocket listening on ws://0.0.0.0:${WS_PORT}/`)
+log(`[hub] WebSocket listening on ws://0.0.0.0:${WS_PORT}/`)
 
 // เก็บ message ล่าสุดต่อ node เพื่อ replay ให้ client ที่เพิ่งต่อ (เช่น เว็บ reload
 // แล้วอยากเห็นระดับถัง/น้ำหนักล่าสุดทันที)
@@ -42,7 +49,7 @@ function cameraLight(on) {
     body:    JSON.stringify({ on }),
   }).catch(err => {
     if (!cameraLight._warned) {
-      console.warn('[hub] camera server unreachable at', CAMERA_URL, '—', err.message)
+      warn('[hub] camera server unreachable at', CAMERA_URL, '—', err.message)
       cameraLight._warned = true
     }
   })
@@ -50,7 +57,7 @@ function cameraLight(on) {
 
 wss.on('connection', (client, req) => {
   const who = req.socket.remoteAddress
-  console.log(`[hub] client connected: ${who}`)
+  log(`[hub] client connected: ${who}`)
 
   // replay สถานะล่าสุดของทุก node ให้ client ใหม่
   for (const line of lastByNode.values()) {
@@ -64,7 +71,7 @@ wss.on('connection', (client, req) => {
     const msg  = parse(line)
     const node = msg?.node || null
     if (node) lastByNode.set(node, line)
-    console.log('[hub] <-', line)
+    log('[hub] <-', line)
 
     // ไฟกล้อง — ESP32 #1 ยิง {"node":"camera","event":"on"} เองเมื่อเห็นของ
     // hub อยู่บน Pi เครื่องเดียวกับ model_server อยู่แล้ว จึงยิง GPIO ต่อได้เลย
@@ -82,6 +89,6 @@ wss.on('connection', (client, req) => {
     }
   })
 
-  client.on('close', () => console.log(`[hub] client disconnected: ${who}`))
-  client.on('error', (e) => console.warn('[hub] client error:', e.message))
+  client.on('close', () => log(`[hub] client disconnected: ${who}`))
+  client.on('error', (e) => warn('[hub] client error:', e.message))
 })

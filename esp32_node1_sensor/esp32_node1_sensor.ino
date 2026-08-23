@@ -3,14 +3,17 @@ Capybara Waste Sorter — ESP32 NODE #1: presence + weight  (WiFi / WebSocket)
 
 หน้าที่:
 - HC-SR04 x2          → ตรวจมือ 2 จุดให้ครอบคลุม
-                        ตัวใดตัวหนึ่ง < PRESENT_CM = มีมือ → detected (ปลุกกล้อง)
-                        ทั้ง 2 ตัว >= PRESENT_CM = ว่าง → cleared (เว็บนับถอยหลังแล้วถ่าย)
+                        ยิงสลับตัวรอบละตัว (กันคลื่นชนกันเอง) ตัวใดตัวหนึ่งเห็นใกล้กว่า
+                        PRESENT_ENTER_CM ติดกันพอ = มีมือ → detected (ปลุกกล้อง)
+                        ทั้ง 2 ตัวไกลกว่า PRESENT_EXIT_CM = ว่าง → cleared (เว็บถ่าย)
 - HX711 + Load cell   → วัดน้ำหนัก (เช็ค "เศษอาหาร")
 - เชื่อม WiFi ของ Pi (AP) แล้วส่ง JSON event ไป WebSocket hub บน Pi
 
 ส่ง (node="sensor"):
-{"node":"sensor","event":"detected","grams":123.4}   // เห็นของ + น้ำหนักล่าสุด
-{"node":"sensor","event":"cleared","grams":0.5}       // ไม่เห็นของแล้ว
+{"node":"sensor","event":"detected","grams":123.4,"cm1":21.3,"cm2":999}  // เห็นของ
+{"node":"sensor","event":"cleared","grams":0.5,"cm1":999,"cm2":999}      // ไม่เห็นแล้ว
+                                                      // cm1/cm2 = ระยะล่าสุดของแต่ละตัว
+                                                      // (ไว้ไล่ปัญหาจาก log ฝั่ง Pi)
 {"node":"sensor","event":"weight","grams":123.4}      // ทุก 500ms ระหว่างมีของ + ต่ออีก
                                                       // WEIGHT_TAIL_MS หลัง cleared
 {"node":"camera","event":"on"}                        // เห็นมือรอบแรก → ไฟกล้องติดเลย
@@ -57,15 +60,22 @@ const int   TRIG_PIN     = 5;     // ตัวที่ 1
 const int   ECHO_PIN     = 18;
 const int   TRIG_PIN2    = 27;    // ตัวที่ 2
 const int   ECHO_PIN2    = 26;
-const float PRESENT_CM   = 40.0;  // ตัวใดตัวหนึ่ง < ค่านี้ = มีมือ; ทั้งคู่ >= = ว่าง
+// เกณฑ์ระยะแบบ hysteresis (คนละเส้นขาเข้า/ขาออก)
+// เดิมใช้เส้นเดียวที่ 40 ซม. — ของที่ตั้งอยู่แถวเส้นพอดี (ขอบถัง ผนัง เก้าอี้ คนนั่งใกล้ ๆ)
+// ทำให้ค่าที่อ่านได้แกว่ง ±2-3 ซม. ตามปกติของ HC-SR04 แล้วข้ามเส้นไปมา = detected/cleared
+// สลับกันรัวทั้งที่ไม่มีใครมา (log จริงเจอ 78 รอบ ถ่ายจริง 0 รอบ) แยกสองเส้นแล้วต้อง
+// เข้ามาใกล้กว่า 35 จริง ๆ ถึงนับว่ามีของ และต้องออกไปไกลกว่า 45 ถึงจะนับว่าว่าง
+const float PRESENT_ENTER_CM = 35.0;  // ใกล้กว่านี้ = เริ่มนับว่ามีของ
+const float PRESENT_EXIT_CM  = 45.0;  // ไกลกว่านี้ = ว่าง (ระหว่าง 35-45 คงสถานะเดิมไว้)
+const float MIN_VALID_CM     = 3.0;   // ต่ำกว่านี้ = ต่ำกว่าสเปกเซ็นเซอร์ = สัญญาณกวน ทิ้ง
+
 const int   STABLE_READS = 3;     // อ่านได้ค่าเดิมติดกันกี่รอบถึงเชื่อ (x100ms)
-// ต้องเห็นติดกันกี่รอบถึงจุดไฟ — เดิมใช้รอบเดียวเพื่อให้ไวที่สุด แต่ HC-SR04 มีค่าอ่าน
-// หลอนแบบพุ่งเดี่ยวปนมา (วัดได้ ~4% ของรอบอ่าน) ทำให้ไฟกระพริบรัวตลอดเวลาทั้งที่
-// ไม่มีใครมา — 3 รอบกรองค่าหลอนเดี่ยวทิ้ง
-//
-// หมายเหตุ: ตอนนี้เท่ากับ STABLE_READS พอดี ไฟจึงติดพร้อม detected ไม่ได้นำหน้าแล้ว
-// ถ้าอยากให้ไฟมาก่อนต้องลดเป็น 2 แต่จะมีค่าหลอนหลุดมาบ้าง (~1 ครั้ง/นาที)
-const int   LIGHT_ON_READS = 3;
+// เซ็นเซอร์ตัวหนึ่ง ๆ ต้องเห็นใกล้ติดกันกี่ครั้งของตัวเองถึงจะนับว่า "ใกล้จริง"
+// (ยิงสลับตัวรอบละตัว → 2 ครั้งของตัวเดียวกัน = 200ms) กันค่าหลอนเดี่ยว ๆ
+const int   NEAR_READS_PER_SENSOR = 2;
+// present ขึ้นแล้วรอกี่รอบถึงจุดไฟ — ด่านกรองอยู่ที่ NEAR_READS_PER_SENSOR แล้ว
+// ตรงนี้จึงเป็น 1 เพื่อให้ไฟยังติดไว
+const int   LIGHT_ON_READS = 1;
 
 // ---------- HX711 load cell ----------
 const int   HX711_DT           = 21;
@@ -104,6 +114,12 @@ unsigned long webSince = 0;
 
 bool  currentState  = false;
 int   sameReads     = 0;
+// ระยะล่าสุดของเซ็นเซอร์แต่ละตัว + ตัวนับ "เห็นใกล้ติดกัน" ของตัวนั้น ๆ
+// (ยิงทีละตัวสลับรอบ ค่าจึงอัปเดตคนละจังหวะ ต้องเก็บไว้ทั้งคู่)
+float cmLast[2]     = { 999.0, 999.0 };
+int   nearReads[2]  = { 0, 0 };
+int   pingIdx       = 0;       // รอบนี้ยิงตัวไหน (สลับ 0/1 ทุกรอบ)
+bool  present       = false;   // สถานะ hysteresis — คงค่าไว้ระหว่างรอบ
 float currentWeight = 0.0;
 unsigned long lastRead = 0, lastWeightRead = 0, lastWeightSend = 0, lastDbg = 0;
 unsigned long clearedAt = 0;   // เวลาที่ส่ง cleared ล่าสุด — ใช้คุมหางการส่งน้ำหนัก
@@ -115,7 +131,9 @@ float readDistanceCm(int trig, int echo) {
   digitalWrite(trig, LOW);
   long us = pulseIn(echo, HIGH, 30000);       // timeout 30ms (~5m)
   if (us == 0) return 999.0;                  // ไม่มี echo = ไกล/ว่าง
-  return us / 58.0;
+  float cm = us / 58.0;
+  if (cm < MIN_VALID_CM) return 999.0;        // ใกล้เกินสเปก = เสียงกวน ไม่ใช่ของจริง
+  return cm;
 }
 
 float readWeight() {
@@ -127,11 +145,15 @@ float readWeight() {
 }
 
 void sendEvent(const char* event) {
-  StaticJsonDocument<96> doc;
+  StaticJsonDocument<160> doc;
   doc["node"]  = "sensor";
   doc["event"] = event;
   doc["grams"] = round(currentWeight * 10) / 10.0;
-  char buf[96];
+  // แนบระยะล่าสุดของทั้ง 2 ตัวไปด้วย — ตอนไล่ปัญหา "ติดเอง" ไม่มีค่านี้ใน log
+  // เลยยืนยันไม่ได้ว่าตอนนั้นเซ็นเซอร์เห็นอะไร (Serial ดูไม่ได้ บอร์ดอยู่บน WiFi)
+  doc["cm1"]   = round(cmLast[0] * 10) / 10.0;
+  doc["cm2"]   = round(cmLast[1] * 10) / 10.0;
+  char buf[160];
   size_t n = serializeJson(doc, buf);
   ws.sendTXT(buf, n);
   Serial.print("-> "); Serial.println(buf);
@@ -213,18 +235,42 @@ void loop() {
   ws.loop();
   unsigned long now = millis();
 
-  // presence poll (เร็ว) — อ่าน 2 ตัว: ตัวใดตัวหนึ่ง < PRESENT_CM = มีมือ
+  // presence poll (เร็ว) — ยิงทีละตัวสลับรอบ + hysteresis 35/45 ซม.
   if (now - lastRead >= IR_READ_INTERVAL) {
     lastRead = now;
-    float cm1 = readDistanceCm(TRIG_PIN,  ECHO_PIN);
-    float cm2 = readDistanceCm(TRIG_PIN2, ECHO_PIN2);
-    bool present = (cm1 < PRESENT_CM) || (cm2 < PRESENT_CM);
+
+    // ยิงทีละตัว สลับรอบ — เดิมยิงตัวที่ 1 แล้วต่อตัวที่ 2 ทันทีในรอบเดียวกัน
+    // คลื่นของตัวแรกยังก้องอยู่ ตัวที่สองรับเข้าไปเป็นระยะสั้นปลอม ๆ ได้
+    // (โค้ดใช้ OR ปลอมตัวเดียวก็พอทำให้ทั้งระบบเด้ง) สลับรอบแล้วห่างกัน 100ms
+    pingIdx = 1 - pingIdx;
+    cmLast[pingIdx] = (pingIdx == 0) ? readDistanceCm(TRIG_PIN,  ECHO_PIN)
+                                     : readDistanceCm(TRIG_PIN2, ECHO_PIN2);
+
+    // นับเฉพาะตัวที่เพิ่งอ่าน — ต้องเห็นใกล้ติดกันเองหลายครั้งถึงเชื่อ
+    // โซนกลาง (35-45) ค่อย ๆ ลดลงทีละ 1 ไม่ล้างทันทีและไม่แช่ค้าง — ของที่ค้างอยู่
+    // แถวเส้นแบ่งจึงคลายออกเองได้ ส่วนค่าที่แกว่งเข้า ๆ ออก ๆ จะไม่มีวันนับถึงเกณฑ์
+    if (cmLast[pingIdx] < PRESENT_ENTER_CM) {
+      // เพดานต่ำ ๆ สำคัญ: ถ้าปล่อยให้นับสูงลิ่ว พอคนถอยไปยืนโซนกลาง (35-45)
+      // ต้องรอ decay ทีละ 1 หลายวินาทีกว่าจะปล่อย cleared — เพดาน 4 ปล่อยใน ~1 วิ
+      if (nearReads[pingIdx] < NEAR_READS_PER_SENSOR + 2) nearReads[pingIdx]++;
+    } else if (cmLast[pingIdx] > PRESENT_EXIT_CM) {
+      nearReads[pingIdx] = 0;
+    } else if (nearReads[pingIdx] > 0) {
+      nearReads[pingIdx]--;
+    }
+
+    bool near = (nearReads[0] >= NEAR_READS_PER_SENSOR) ||
+                (nearReads[1] >= NEAR_READS_PER_SENSOR);
+    bool far  = (nearReads[0] == 0) && (nearReads[1] == 0);
+    if (near)      present = true;
+    else if (far)  present = false;   // อยู่ระหว่างกลาง = คงสถานะเดิม (hysteresis)
 
     // debug: พิมพ์ระยะทั้ง 2 ตัว + น้ำหนัก ทุก 500ms
     if (now - lastDbg >= 500) {
       lastDbg = now;
-      Serial.printf("[sr04] cm1=%.1f  cm2=%.1f  w=%.1f g  %s\n",
-                    cm1, cm2, currentWeight, present ? "PRESENT" : "empty");
+      Serial.printf("[sr04] cm1=%.1f(%d)  cm2=%.1f(%d)  w=%.1f g  %s\n",
+                    cmLast[0], nearReads[0], cmLast[1], nearReads[1],
+                    currentWeight, present ? "PRESENT" : "empty");
     }
 
     // ไฟกล้อง — เดินตาม lightOwner (ดูคำอธิบายสถานะด้านบน)
@@ -239,7 +285,7 @@ void loop() {
     } else if (lightOwner == LIGHT_ARMED) {
       if (present) {
         absentReads = 0;
-      } else if (++absentReads >= STABLE_READS) {     // ไม่ครบ 5 รอบ → ของปลอม ดับทิ้ง
+      } else if (++absentReads >= STABLE_READS) {     // หายครบ STABLE_READS → ของปลอม ดับทิ้ง
         lightOwner = LIGHT_IDLE;
         sendCameraLight(false);
       }
@@ -253,7 +299,7 @@ void loop() {
     } else if (++sameReads >= STABLE_READS) {
       currentState = present;
       sameReads = 0;
-      if (currentState && lightOwner == LIGHT_ARMED) {  // ครบ 5 รอบ → ส่งมอบให้เว็บ
+      if (currentState && lightOwner == LIGHT_ARMED) {  // ยืนยันแล้ว → ส่งมอบให้เว็บ
         lightOwner = LIGHT_WEB;
         webSince   = now;
       }

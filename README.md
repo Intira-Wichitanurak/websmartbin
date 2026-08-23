@@ -194,8 +194,9 @@ curl -s -X POST -H 'Content-Type: application/json' \
 
 | node | ค่า | ความหมาย |
 |---|---|---|
-| #1 | `PRESENT_CM` 40.0 | ใกล้กว่านี้ = มีมือ |
-| #1 | `STABLE_READS` 3 / `LIGHT_ON_READS` 3 | อ่านซ้ำกี่รอบถึงเชื่อ (กันค่าหลอนของ HC-SR04) |
+| #1 | `PRESENT_ENTER_CM` 35 / `PRESENT_EXIT_CM` 45 | เข้ามาใกล้กว่า 35 = มีของ, ออกไปไกลกว่า 45 = ว่าง (ช่วงกลางคงสถานะเดิม) |
+| #1 | `NEAR_READS_PER_SENSOR` 2 | เซ็นเซอร์ตัวเดียวกันต้องเห็นใกล้ติดกันกี่ครั้งถึงเชื่อ |
+| #1 | `STABLE_READS` 3 / `LIGHT_ON_READS` 1 | ยืนยัน detected/cleared กี่รอบ / รอกี่รอบถึงจุดไฟ |
 | #1 | `WEIGHT_TAIL_MS` 19000 | ส่งน้ำหนักต่ออีกกี่ ms หลัง `cleared` (ต้องคลุม 15+3 วิของเว็บ) |
 | #1 | `CALIBRATION_FACTOR` / `BASELINE` | คาลิเบรตตาชั่ง — **ต้องตั้งใหม่ทุกเครื่อง** |
 | #2 | `CLASSIFY_ON_MS` 20000 | ไฟถังติดค้างกี่ ms |
@@ -330,6 +331,7 @@ python3 model_server.py
 | เซิร์ฟเวอร์โมเดลไม่ขึ้น | อ่าน error ใน `kiosk.log` — มักเป็นจำนวนคลาสใน `class_map.json` ไม่ตรงกับโมเดล หรือยังไม่ได้ลง backend ของสกุลไฟล์นั้น |
 | ไฟกล้องค้าง | ปกติดับเองใน 25 วิ ถ้าไม่ดับ → `curl -X POST -H 'Content-Type: application/json' -d '{"on":false}' localhost:8000/camera` |
 | หน้าจอเด้ง "ไม่เจอขยะ" ทั้งที่มีของ | น้ำหนักไม่ถึง `MIN_ITEM_WEIGHT_G` หรือตาชั่งเพี้ยน → คาลิเบรตใหม่ |
+| ระบบติดเอง/ไฟกล้องติดทั้งที่ไม่มีคน | เซ็นเซอร์ node #1 เห็นของปลอม — ดู `cm1`/`cm2` ใน `grep detected kiosk.log` ถ้าค่าวนอยู่แถว 35-45 แปลว่ามีอะไรตั้งอยู่ในระยะ ให้ขยับของออกหรือลด `PRESENT_ENTER_CM` |
 | พอร์ต 8000/8181 ถูกใช้อยู่ | มีโปรเซสเดิมค้าง → `pkill -f model_server.py` / `pkill -f ws-hub.js` |
 
 ---
